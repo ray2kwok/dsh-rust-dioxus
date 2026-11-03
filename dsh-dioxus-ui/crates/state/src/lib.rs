@@ -10,10 +10,14 @@
 //! 3. `surfaceOp: { op: "replace", startSeq, endSeq }` 表示「用本事件替换区间」，
 //!    compaction 依赖这一条，不能简单 append。
 
+mod projection;
+
 use dsh_proto::session::{
     AssistantStreamFrame, SessionFollowFrame, SessionWireEvent, SessionWireHeader, SurfaceOp,
 };
 use serde_json::Value;
+
+pub use projection::ProjectionStore;
 
 /// 归约结果，便于上层决定是否需要滚动/重排。
 #[derive(Debug, Clone, PartialEq, Eq)]

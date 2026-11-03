@@ -81,6 +81,12 @@ pub mod files {
     pub const CHANGES: &str = "workspaceFiles/changes";
 }
 
+/// 子 Agent 控制面（namespace 是复数 `subagents`，实测 404 才确认）。
+pub mod subagent {
+    pub const PROMPT: &str = "subagents/prompt";
+    pub const INTERRUPT_BY_PARENT: &str = "subagents/interruptByParent";
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

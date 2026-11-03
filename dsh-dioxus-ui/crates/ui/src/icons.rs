@@ -40,7 +40,9 @@ fn markup_for(glyph: &str) -> &'static str {
         "send-outline" => SVG_SEND_OUTLINE,
         "search-outline" => SVG_SEARCH_OUTLINE,
         "branch-outline" => SVG_BRANCH_OUTLINE,
+        "graph-outline" => SVG_GRAPH_OUTLINE,
         "panel-right-outline" => SVG_PANEL_LEFT_OUTLINE,
+        "refresh-outline" => SVG_REFRESH_OUTLINE,
         _ => "",
     }
 }
@@ -68,3 +70,7 @@ const SVG_SEND_OUTLINE: &str = r#"<path d="M6.97211 1.94476C7.55785 1.35914 8.50
 const SVG_SEARCH_OUTLINE: &str = r#"<path d="M6.58727 11.8586C9.55061 11.8586 11.9529 9.45637 11.9529 6.49304C11.9529 3.5297 9.55061 1.12744 6.58727 1.12744C3.62394 1.12744 1.22168 3.5297 1.22168 6.49304C1.22168 9.45637 3.62394 11.8586 6.58727 11.8586Z" stroke="currentColor"></path><path d="M10.2991 10.3933L14.7783 14.8725" stroke="currentColor"></path>"#;
 
 const SVG_BRANCH_OUTLINE: &str = r#"<path d="M1.01503 8.0001L5.6964 8.0001C6.41913 8.0001 6.78049 8.0001 7.12115 7.91951C7.4232 7.84804 7.71233 7.73014 7.97821 7.57C8.27809 7.38939 8.5364 7.13669 9.05303 6.63129L11.3281 4.40564" stroke="currentColor"></path><path d="M1.01221 7.9999L5.6964 7.9999C6.41913 7.9999 6.78049 7.9999 7.12115 8.08049C7.4232 8.15196 7.71233 8.26986 7.97821 8.43C8.27809 8.61061 8.5364 8.86331 9.05303 9.36871L11.3281 11.5944" stroke="currentColor"></path><circle cx="12.4502" cy="3.3079" r="1.56962" stroke="currentColor"></circle><circle cx="12.4502" cy="12.6921" r="1.56962" stroke="currentColor"></circle>"#;
+
+const SVG_REFRESH_OUTLINE: &str = r#"<path d="M13.4 6.6A5.5 5.5 0 1 0 13.5 9.2" stroke="currentColor"></path><path d="M13.5 2.4V6.6H9.3" stroke="currentColor"></path>"#;
+
+const SVG_GRAPH_OUTLINE: &str = r#"<circle cx="3" cy="3.5" r="1.4" stroke="currentColor"></circle><circle cx="13" cy="4" r="1.4" stroke="currentColor"></circle><circle cx="7.5" cy="13" r="1.4" stroke="currentColor"></circle><path d="M4.4 3.9 11.6 4M3.8 4.8 6.8 11.7M12.1 5.3 8.6 11.8" stroke="currentColor"></path>"#;

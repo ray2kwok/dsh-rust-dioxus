@@ -20,6 +20,7 @@ pub mod layout;
 pub mod markdown;
 pub mod model;
 pub mod sidebar;
+pub mod subagent;
 pub mod tool_card;
 
 pub use i18n::{Key, Locale, T};
@@ -27,7 +28,9 @@ pub use icons::Icon;
 pub use layout::AppShell;
 pub use markdown::MarkdownView;
 pub use model::{
-    ApprovalItem, ConnectionState, FileEntry, MessageRow, QuestionCard, QuestionItemView,
-    QueueItem, Role, SendMode, SessionStatus, SessionSummary, Theme, TrajectoryRow,
+    ApprovalItem, AsideChat, ConnectionState, FileEntry, MessageRow, QuestionCard,
+    QuestionItemView, QueueItem, Role, SendMode, SessionStatus, SessionSummary, SubagentMode,
+    SubagentRow, SubagentState, Theme, TrajectoryRow,
 };
+pub use subagent::{SubagentAside, SubagentCatalog};
 pub use tool_card::ToolCard;

@@ -247,9 +247,9 @@ P0/P1/P2 需要的 endpoint（`args` 键带 ⚠ 的需抓包核对）：
 | `fileReferences/list` | `agentId, …` ⚠ | `@` 引用 | P1 |
 | `workspaceFiles/list` / `read` | `workspaceFileScopeId, …` ⚠ | 文件树 / 预览 | P1 |
 | `$events/result` | `clientId, eventId, outcome` | 审批/waterfall 回执 | P0 |
-| `session/projections` | `sessionId` | 按需读取某会话的 projection（子目录展开 / 失败重试） | P2 |
-| `subagent/prompt` | `request` | continuable 子会话续聊（`delivery: queue\|steer`） | P2 |
-| `subagent/interruptByParent` | `childSessionId, parentSessionId, mode` | 子会话独立停止当前 turn | P2 |
+| `session/projections` | `request` ⚠ | 按需读取某会话的 projection（子目录展开 / 失败重试） | P2 |
+| `subagents/prompt` | `request` | continuable 子会话续聊（`delivery: queue\|steer`） | P2 |
+| `subagents/interruptByParent` | `childSessionId, parentSessionId, mode` | 子会话独立停止当前 turn | P2 |
 
 核心帧类型（照抄上游 `stream-protocol.ts` / `session-controller/types.ts`）：
 
@@ -487,14 +487,18 @@ enum Route {
 
 ### 10.4 子 Agent 目录与子会话（P2 主线）
 
+> Agent/Session/Subagent 的概念关系、创建与管理流程、Host 端包组合见
+> [`AGENT_SUBAGENT.md`](AGENT_SUBAGENT.md)。本节只描述客户端如何显示与操作。
+
 P2 只做「多 Agent 协作 / 集群」这一条主线；其余增强项统一进 P3（见 PR §5.9）。
 
 **入口与形态**
 
 - 会话 header 保留标题作为血缘面包屑；父会话的 `subagentCatalog` 非空、或读取失败时，
   在 preset 标签之后显示后代计数触发器；成功加载的空目录不显示入口。
-- 触发器打开层级目录：每行 = 状态点 / 加载环 + 模式徽标（one-shot / continuable /
-  external / unknown）+ 标题，右侧上下两行分别是累计用量与本轮耗时。
+- 触发器打开层级目录（默认列表，可切到只读关系图）：列表每行 = 状态点 / 加载环 +
+  模式徽标（one-shot / continuable / external / unknown）+ 标题，右侧上下两行分别是
+  累计用量与本轮耗时；关系图用 tidy-tree 展示同一批已加载节点与父子边。
 - 行可展开子级：展开时才读取该子会话的 projections，不预取整棵树；自身目录读空后才算已知叶子。
 - external 行永远是叶子（没有本地子会话）；unknown 行保持可点，进入后由历史确认模式。
 
@@ -509,7 +513,7 @@ P2 只做「多 Agent 协作 / 集群」这一条主线；其余增强项统一�
 
 | 子会话状态 | 输入区 | 停止 |
 | --- | --- | --- |
-| continuable + 父会话存活 | 普通 composer，发送走 `subagent/prompt`（`delivery: queue\|steer`） | `subagent/interruptByParent`，只停子会话当前 turn |
+| continuable + 父会话存活 | 普通 composer，发送走 `subagents/prompt`（`delivery: queue\|steer`） | `subagents/interruptByParent`，只停子会话当前 turn |
 | continuable + 父不可用 + 运行中 | 输入禁用 | 停止可用 |
 | continuable + 父不可用 + 已停止 | 只读说明（提示恢复路径） | 无 |
 | one-shot / unknown | 只读记录 | 无 |
@@ -618,7 +622,12 @@ pub fn apply_theme(theme: Theme) {   // 对应上游 theme-presenter.ts
 | `subagentCatalog` | 直接子 Agent 目录（挂在父会话） | `[{id, createdAt, mode, label?}]` ⚠ 待实测 |
 | `subagentTiming` | 子会话耗时/完成态 | `{ settledMs, active?: {since, through}, lastTurnCompleted? }` ⚠ 待实测 |
 | `subagent` | 子会话身份 | `{ mode, label?, seq } \| null` ⚠ 待实测 |
-| `tokenUsage` | 累计用量（四桶） | `{ inputTokens, outputTokens, cacheReadTokens?, cacheWriteTokens? }` ⚠ 待实测 |
+| `tokenUsage` | 累计用量（四桶） | `{ uncachedInputTokens, outputTokens, cacheReadTokens, cacheWriteTokens }` ✅ |
+
+**实测（2026-11-03，对真实 Host）**：`session/control` 的 baseline 同时包含上述四个
+子 Agent projection（无子会话时 `subagentCatalog: []`、`subagentTiming: {settledMs:0}`、
+`subagent: null`、`tokenUsage: {uncachedInputTokens:0,…}`）。`subagentCatalog` 的
+单行形状仍按上游类型解析，待真实子会话采样补断言。
 
 **实时性**：follow 的 `snapshot` 只给一次 baseline。子 Agent 的运行状态、耗时与用量要
 实时变化，必须另开 `session/control`（`baseline` 全量替换 + `projection` 增量）。
@@ -805,7 +814,7 @@ dx build --platform desktop --release
 > 上下文占用（`contextPressure`）、标题（`title` projection）、
 > 归档过滤（`workspace/follow` 的 `archivedSessionIds`）、新建会话、diff 卡片均已接通。
 > 完整 i18n 字典已随范围调整移入 P3 |
-> | M4 多 Agent（P2 主线） | ○ | 未开工，当前只有 `SessionAddress::Subagent` 类型。设计见 §10.4，切片 P2-1～P2-4 |
+> | M4 多 Agent（P2 主线） | ◐ | P2-1～P2-4 已落地：projection 类型、地址化 follow/分页、子 Agent 目录树、续聊/独立停止、只读态、`session/control` 实时状态、侧栏过滤、右栏侧开。**待做**：真实子 Agent 会话端到端（模型派生子 Agent）、S9 手工清单、骨架/状态细节对齐 |
 > | M5 打磨 | ◐ | 消息渲染窗口化（最近 300 条）+ release 4.7MB + 冒烟脚本；**待做**：真虚拟列表、内存曲线 |
 > | P3 后续 | — | 图片/PDF 预览、终端、Jobs、插件/定时/账号等（PR §5.9）；附件与 @ 引用、搜索仍属 P1，随 M4 并行 |
 >
@@ -857,6 +866,9 @@ dx build --platform desktop --release
 - `session/list` 的 `args` 必须是 `{"_request":{}}` ✅
 - `$events` 首帧 `ready`（含 `clientId`/`host.home`）可解析 ✅
 - `$events/result` 的字段形状被接受；Host 对不存在的 `eventId` 也返回成功（幂等）✅
+- `session/control` 打开成功；baseline 的 `projections` 含 `subagentCatalog` / `subagentTiming` / `subagent` / `tokenUsage` ✅
+- `session/projections` 的 `args` 是 `{ "request": { "sessionId": … } }`（不是平铺 `sessionId`）✅
+- 子 Agent 端点 namespace 是复数：`subagents/prompt`（`{request}`）与 `subagents/interruptByParent`（平铺三字段）✅；对不存在的 child，`prompt` 返回业务错误 `subagent/not-resumable`，`interruptByParent` 返回 `{accepted:true}`
 
 **仍开放**：
 

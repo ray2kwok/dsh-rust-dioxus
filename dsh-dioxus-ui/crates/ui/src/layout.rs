@@ -1,15 +1,18 @@
 //! 三栏骨架：Sidebar / Main / RightBar + 设置浮层 + 状态栏。
 
+use std::collections::HashMap;
+
 use dioxus::prelude::*;
 
 use crate::conversation::ConversationView;
 use crate::i18n::{self, Key, Locale, use_t};
 use crate::icons::Icon;
 use crate::model::{
-    ApprovalItem, ConnectionState, FileEntry, MessageRow, QuestionCard, QueueItem, SendMode,
-    SessionSummary, Theme, TrajectoryRow,
+    ApprovalItem, AsideChat, ConnectionState, FileEntry, MessageRow, QuestionCard, QueueItem,
+    SendMode, SessionSummary, SubagentMode, SubagentRow, Theme, TrajectoryRow,
 };
 use crate::sidebar::SessionList;
+use crate::subagent::SubagentAside;
 
 #[component]
 pub fn AppShell(
@@ -50,16 +53,36 @@ pub fn AppShell(
     on_select: EventHandler<String>,
     #[props(default = EventHandler::new(|_| {}))] on_new_session: EventHandler<()>,
     on_send: EventHandler<String>,
+    #[props(default = false)] is_subagent: bool,
+    #[props(default = None)] subagent_mode: Option<SubagentMode>,
+    #[props(default = true)] parent_available: bool,
+    #[props(default = Vec::new())] lineage: Vec<(String, String)>,
+    #[props(default = EventHandler::new(|_| {}))] on_navigate: EventHandler<String>,
+    #[props(default = Vec::new())] subagent_rows: Vec<SubagentRow>,
+    #[props(default = HashMap::new())] subagent_tree: HashMap<String, Vec<SubagentRow>>,
+    #[props(default = Vec::new())] subagent_expanded: Vec<String>,
+    #[props(default = EventHandler::new(|_| {}))] on_subagent_toggle: EventHandler<String>,
+    #[props(default = EventHandler::new(|_| {}))] on_subagent_open: EventHandler<SubagentRow>,
+    #[props(default = EventHandler::new(|_| {}))] on_subagent_aside: EventHandler<SubagentRow>,
+    #[props(default = EventHandler::new(|_| {}))] on_subagent_refresh: EventHandler<()>,
+    #[props(default = None)] aside: Option<AsideChat>,
+    #[props(default = EventHandler::new(|_| {}))] on_close_aside: EventHandler<()>,
 ) -> Element {
     let t = use_t();
     let mut collapsed = use_signal(|| false);
     let mut show_right = use_signal(|| false);
     let mut show_settings = use_signal(|| false);
+    let aside_open = aside.is_some();
 
-    let shell_class = if collapsed() {
-        "shell shell--collapsed"
-    } else {
-        "shell"
+    let shell_class = {
+        let mut classes = String::from("shell");
+        if collapsed() {
+            classes.push_str(" shell--collapsed");
+        }
+        if show_right() || aside_open {
+            classes.push_str(" shell--rightbar");
+        }
+        classes
     };
 
     rsx! {
@@ -107,22 +130,47 @@ pub fn AppShell(
                     on_cancel,
                     on_decide,
                     on_send,
-                    on_toggle_right: move |_| show_right.toggle(),
+                    is_subagent,
+                    subagent_mode,
+                    parent_available,
+                    lineage: lineage.clone(),
+                    on_navigate,
+                    subagent_rows: subagent_rows.clone(),
+                    subagent_tree: subagent_tree.clone(),
+                    subagent_expanded: subagent_expanded.clone(),
+                    on_subagent_toggle,
+                    on_subagent_open,
+                    on_subagent_aside,
+                    on_subagent_refresh,
+                    on_toggle_right: move |_| {
+                        if show_right() || aside_open {
+                            show_right.set(false);
+                            on_close_aside.call(());
+                        } else {
+                            show_right.set(true);
+                        }
+                    },
                 }
             }
 
-            if show_right() {
+            if show_right() || aside.is_some() {
                 aside { class: "rightbar",
                     div { class: "rightbar__head",
                         span { "{t.get(Key::Files)}" }
                         span { class: "spacer" }
                         button {
                             class: "icon-btn",
-                            onclick: move |_| show_right.set(false),
+                            onclick: move |_| {
+                                show_right.set(false);
+                                on_close_aside.call(());
+                            },
                             Icon { glyph: "close-outline".to_string() }
                         }
                     }
                     div { class: "rightbar__body",
+                        if let Some(chat) = aside.clone() {
+                            SubagentAside { chat, on_close: on_close_aside }
+                        }
                         if files.is_empty() {
                             div { class: "muted", "{t.get(Key::FilesEmpty)}" }
                         }

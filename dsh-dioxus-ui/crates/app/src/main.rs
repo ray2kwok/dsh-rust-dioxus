@@ -9,18 +9,19 @@
 
 mod map;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dioxus::prelude::*;
 use dsh_proto::events::RemoteEventFrame;
-use dsh_proto::session::SessionFollowFrame;
+use dsh_proto::session::{SessionAddress, SessionControlFrame, SessionFollowFrame};
 use dsh_runtime::DshClient;
-use dsh_state::SessionView;
+use dsh_state::{ProjectionStore, SessionView};
 use dsh_transport::{Backoff, StreamEvent};
 use dsh_ui::{
-    AppShell, ApprovalItem, ConnectionState, FileEntry, MessageRow, QuestionCard, QueueItem,
-    SendMode, SessionSummary, Theme, TrajectoryRow,
+    AppShell, ApprovalItem, AsideChat, ConnectionState, FileEntry, MessageRow, QuestionCard,
+    QueueItem, SendMode, SessionSummary, SubagentRow, Theme, TrajectoryRow,
 };
 use tokio::sync::mpsc;
 
@@ -73,6 +74,18 @@ struct Ui {
     files: Signal<Vec<FileEntry>>,
     preview: Signal<Option<String>>,
     active: Signal<Option<String>>,
+    /// 当前会话的完整地址（普通会话或子会话）。
+    active_address: Signal<Option<SessionAddress>>,
+    /// 子会话的祖先链 `(address, title)`，最后一项是直接的父会话。
+    lineage: Signal<Vec<(SessionAddress, String)>>,
+    /// 全 Host projection 缓存（`session/control`）。
+    projections: Signal<ProjectionStore>,
+    /// 已加载的子 Agent 目录，按父会话 id 缓存。
+    subagent_tree: Signal<HashMap<String, Vec<SubagentRow>>>,
+    /// 展开的目录节点。
+    subagent_expanded: Signal<Vec<String>>,
+    /// 右栏侧开的子会话。
+    aside: Signal<Option<AsideChat>>,
     active_title: Signal<String>,
     host_label: Signal<String>,
     generation: Signal<u64>,
@@ -114,6 +127,12 @@ fn App() -> Element {
         files: use_signal(Vec::<FileEntry>::new),
         preview: use_signal(|| None::<String>),
         active: use_signal(|| None::<String>),
+        active_address: use_signal(|| None::<SessionAddress>),
+        lineage: use_signal(Vec::<(SessionAddress, String)>::new),
+        projections: use_signal(ProjectionStore::new),
+        subagent_tree: use_signal(HashMap::<String, Vec<SubagentRow>>::new),
+        subagent_expanded: use_signal(Vec::<String>::new),
+        aside: use_signal(|| None::<AsideChat>),
         active_title: use_signal(String::new),
         host_label: use_signal(|| "正在启动 Host…".to_string()),
         generation: use_signal(|| 0u64),
@@ -178,6 +197,11 @@ document.documentElement.style.colorScheme = dark ? 'dark' : 'light';"#
                         ui.questions.set(Vec::new());
                         ui.client_id.set(None);
                         ui.client.set(None);
+                        ui.active_address.set(None);
+                        ui.lineage.set(Vec::new());
+                        ui.subagent_tree.set(HashMap::new());
+                        ui.subagent_expanded.set(Vec::new());
+                        ui.aside.set(None);
                         ui.connection.set(ConnectionState::Disconnected);
                         ui.host_label.set("连接已断开，正在重连…".to_string());
                     }
@@ -212,10 +236,15 @@ document.documentElement.style.colorScheme = dark ? 'dark' : 'light';"#
                             .set(list.iter().map(map::to_summary).collect());
                     }
                     ui.active.set(Some(id.clone()));
+                    ui.active_address
+                        .set(Some(SessionAddress::session(id.clone())));
+                    ui.lineage.set(Vec::new());
                     ui.messages.set(Vec::new());
                     ui.trajectory.set(Vec::new());
                     ui.queue.set(Vec::new());
-                    spawn_follow(Arc::clone(&handle), id, ui);
+                    ui.subagent_expanded.set(Vec::new());
+                    ui.aside.set(None);
+                    spawn_follow(Arc::clone(&handle), SessionAddress::session(id), ui);
                 }
                 Err(err) => tracing::warn!(%err, "新建会话失败"),
             }
@@ -224,8 +253,18 @@ document.documentElement.style.colorScheme = dark ? 'dark' : 'light';"#
 
     let on_select = move |id: String| {
         ui.active.set(Some(id.clone()));
+        ui.active_address
+            .set(Some(SessionAddress::session(id.clone())));
+        ui.lineage.set(Vec::new());
+        ui.subagent_expanded.set(Vec::new());
+        ui.aside.set(None);
+        ui.messages.set(Vec::new());
+        ui.trajectory.set(Vec::new());
+        ui.queue.set(Vec::new());
+        ui.has_more.set(false);
+        ui.running.set(false);
         if let Some(handle) = ui.client.read().clone() {
-            spawn_follow(handle, id, ui);
+            spawn_follow(handle, SessionAddress::session(id), ui);
         }
     };
 
@@ -233,7 +272,7 @@ document.documentElement.style.colorScheme = dark ? 'dark' : 'light';"#
         let Some(handle) = ui.client.read().clone() else {
             return;
         };
-        let Some(session_id) = (ui.active)() else {
+        let Some(address) = (ui.active_address)() else {
             return;
         };
 
@@ -247,7 +286,28 @@ document.documentElement.style.colorScheme = dark ? 'dark' : 'light';"#
             SendMode::Steer => dsh_proto::session::PromptMode::Steer,
         };
         spawn(async move {
-            if let Err(err) = handle.prompt_with_mode(session_id, text, mode).await {
+            let result = match &address {
+                SessionAddress::Subagent {
+                    parent_session_id,
+                    child_session_id,
+                    mode: sub_mode,
+                } if sub_mode.is_continuable() => handle
+                    .prompt_subagent(
+                        parent_session_id.as_str(),
+                        child_session_id.as_str(),
+                        *sub_mode,
+                        text,
+                        mode,
+                    )
+                    .await
+                    .map(|_| ()),
+                _ => {
+                    handle
+                        .prompt_with_mode(address.session_id().as_str().to_string(), text, mode)
+                        .await
+                }
+            };
+            if let Err(err) = result {
                 tracing::warn!(%err, "发送失败");
             }
         });
@@ -317,9 +377,13 @@ document.documentElement.style.colorScheme = dark ? 'dark' : 'light';"#
         let Some(handle) = ui.client.read().clone() else {
             return;
         };
-        let Some(session_id) = (ui.active)() else {
+        let Some(address) = (ui.active_address)() else {
             return;
         };
+        if address.is_subagent() {
+            return;
+        }
+        let session_id = address.session_id().as_str().to_string();
         ui.active_title.set(title.clone());
         spawn(async move {
             if let Err(err) = handle
@@ -352,10 +416,15 @@ document.documentElement.style.colorScheme = dark ? 'dark' : 'light';"#
         let Some(handle) = ui.client.read().clone() else {
             return;
         };
-        let Some(session_id) = (ui.active)() else {
+        let Some(address) = (ui.active_address)() else {
             return;
         };
+        if address.is_subagent() {
+            return;
+        }
+        let session_id = address.session_id().as_str().to_string();
         ui.active.set(None);
+        ui.active_address.set(None);
         ui.messages.set(Vec::new());
         ui.trajectory.set(Vec::new());
         spawn(async move {
@@ -386,7 +455,7 @@ document.documentElement.style.colorScheme = dark ? 'dark' : 'light';"#
         let Some(handle) = ui.client.read().clone() else {
             return;
         };
-        let Some(session_id) = (ui.active)() else {
+        let Some(address) = (ui.active_address)() else {
             return;
         };
         let Some(mut current) = (ui.view)() else {
@@ -397,7 +466,7 @@ document.documentElement.style.colorScheme = dark ? 'dark' : 'light';"#
         };
 
         spawn(async move {
-            match handle.page_before(session_id, first_seq, 200).await {
+            match handle.page_before_address(address, first_seq, 200).await {
                 Ok(page) => {
                     let events: Vec<_> = page
                         .records
@@ -444,11 +513,30 @@ document.documentElement.style.colorScheme = dark ? 'dark' : 'light';"#
         let Some(handle) = ui.client.read().clone() else {
             return;
         };
-        let Some(session_id) = (ui.active)() else {
+        let Some(address) = (ui.active_address)() else {
             return;
         };
         spawn(async move {
-            if let Err(err) = handle.cancel(session_id).await {
+            let result = match &address {
+                SessionAddress::Subagent {
+                    parent_session_id,
+                    child_session_id,
+                    mode,
+                } if mode.is_continuable() => handle
+                    .interrupt_subagent(
+                        parent_session_id.as_str(),
+                        child_session_id.as_str(),
+                        *mode,
+                    )
+                    .await
+                    .map(|_| ()),
+                _ => {
+                    handle
+                        .cancel(address.session_id().as_str().to_string())
+                        .await
+                }
+            };
+            if let Err(err) = result {
                 tracing::warn!(%err, "取消失败");
             }
         });
@@ -463,13 +551,113 @@ document.documentElement.style.colorScheme = dark ? 'dark' : 'light';"#
         }
     };
 
+    let on_subagent_refresh = move |_| {
+        let Some(handle) = ui.client.read().clone() else {
+            return;
+        };
+        let Some(address) = (ui.active_address)() else {
+            return;
+        };
+        refresh_catalog(handle, address.session_id().as_str().to_string(), ui);
+    };
+
+    let on_subagent_toggle = move |id: String| {
+        let mut expanded = (ui.subagent_expanded)();
+        if let Some(pos) = expanded.iter().position(|item| item == &id) {
+            expanded.remove(pos);
+            ui.subagent_expanded.set(expanded);
+            return;
+        }
+        expanded.push(id.clone());
+        ui.subagent_expanded.set(expanded);
+        if !(ui.subagent_tree)().contains_key(&id)
+            && let Some(handle) = ui.client.read().clone()
+        {
+            refresh_catalog(handle, id, ui);
+        }
+    };
+
+    let on_subagent_open = move |row: SubagentRow| {
+        let Some(parent_address) = (ui.active_address)() else {
+            return;
+        };
+        let parent_title = (ui.active_title)();
+        ui.lineage
+            .write()
+            .push((parent_address.clone(), parent_title));
+        let address = SessionAddress::subagent(
+            parent_address.session_id().as_str().to_string(),
+            row.id.clone(),
+            map::wire_mode(row.mode),
+        );
+        ui.active.set(Some(row.id.clone()));
+        ui.active_address.set(Some(address.clone()));
+        ui.subagent_expanded.set(Vec::new());
+        ui.aside.set(None);
+        ui.messages.set(Vec::new());
+        ui.trajectory.set(Vec::new());
+        ui.queue.set(Vec::new());
+        ui.has_more.set(false);
+        ui.running.set(false);
+        if let Some(handle) = ui.client.read().clone() {
+            spawn_follow(handle, address, ui);
+        }
+    };
+
+    let on_subagent_aside = move |row: SubagentRow| {
+        let Some(parent_address) = (ui.active_address)() else {
+            return;
+        };
+        let address = SessionAddress::subagent(
+            parent_address.session_id().as_str().to_string(),
+            row.id.clone(),
+            map::wire_mode(row.mode),
+        );
+        ui.aside.set(Some(AsideChat {
+            id: row.id.clone(),
+            title: row.label.clone(),
+            messages: Vec::new(),
+            running: false,
+        }));
+        if let Some(handle) = ui.client.read().clone() {
+            spawn_aside_follow(handle, address, ui);
+        }
+    };
+
+    let on_navigate = move |id: String| {
+        let lineage = (ui.lineage)();
+        let Some(pos) = lineage
+            .iter()
+            .position(|(address, _)| address.session_id().as_str() == id)
+        else {
+            return;
+        };
+        let (address, _) = lineage[pos].clone();
+        ui.lineage.set(lineage[..pos].to_vec());
+        ui.active.set(Some(id));
+        ui.active_address.set(Some(address.clone()));
+        ui.subagent_expanded.set(Vec::new());
+        ui.aside.set(None);
+        ui.messages.set(Vec::new());
+        ui.trajectory.set(Vec::new());
+        ui.queue.set(Vec::new());
+        ui.has_more.set(false);
+        ui.running.set(false);
+        if let Some(handle) = ui.client.read().clone() {
+            spawn_follow(handle, address, ui);
+        }
+    };
+
+    let on_close_aside = move |_| ui.aside.set(None);
+
     let on_open_file = move |path: String| {
         let Some(handle) = ui.client.read().clone() else {
             return;
         };
-        let Some(scope) = (ui.active)() else {
+        let Some(address) = (ui.active_address)() else {
             return;
         };
+        let scope = address.session_id().as_str().to_string();
         spawn(async move {
             match handle.read_file(&scope, &path).await {
                 Ok(text) => ui.preview.set(Some(text)),
@@ -478,6 +666,38 @@ document.documentElement.style.colorScheme = dark ? 'dark' : 'light';"#
         });
     };
 
+    let active_address = (ui.active_address)();
+    let is_subagent = active_address
+        .as_ref()
+        .is_some_and(SessionAddress::is_subagent);
+    let subagent_mode = active_address
+        .as_ref()
+        .and_then(SessionAddress::mode)
+        .map(map::ui_mode);
+    let parent_available = active_address
+        .as_ref()
+        .and_then(SessionAddress::parent_session_id)
+        .map(|parent| {
+            (ui.all_sessions)()
+                .iter()
+                .any(|summary| summary.id == parent.as_str())
+        })
+        .unwrap_or(true);
+    // 目录成员直接从 projection store 读：control 的 baseline/增量能实时反映到
+    // header，而不依赖「父会话是否已经缓存过目录」。
+    let projection_store = (ui.projections)();
+    let subagent_rows = (ui.active)()
+        .and_then(|id| {
+            projection_store
+                .get(&id, "subagentCatalog")
+                .map(|catalog| map::catalog_rows(&id, catalog, &projection_store))
+        })
+        .unwrap_or_default();
+    let lineage = (ui.lineage)()
+        .into_iter()
+        .map(|(address, title)| (address.session_id().as_str().to_string(), title))
+        .collect::<Vec<_>>();
+
     rsx! {
         document::Style { "{APP_CSS}" }
         AppShell {
@@ -485,7 +705,7 @@ document.documentElement.style.colorScheme = dark ? 'dark' : 'light';"#
                 let archived = (ui.archived)();
                 (ui.all_sessions)()
                     .into_iter()
-                    .filter(|item| !archived.contains(&item.id))
+                    .filter(|item| !item.is_subagent && !archived.contains(&item.id))
                     .collect::<Vec<_>>()
             },
             active_id: (ui.active)(),
@@ -505,6 +725,20 @@ document.documentElement.style.colorScheme = dark ? 'dark' : 'light';"#
             theme: (ui.theme)(),
             generation: (ui.generation)(),
             host_label: (ui.host_label)(),
+            is_subagent,
+            subagent_mode,
+            parent_available,
+            lineage,
+            subagent_rows,
+            subagent_tree: (ui.subagent_tree)(),
+            subagent_expanded: (ui.subagent_expanded)(),
+            aside: (ui.aside)(),
+            on_navigate,
+            on_subagent_toggle,
+            on_subagent_open,
+            on_subagent_aside,
+            on_subagent_refresh,
+            on_close_aside,
             on_select,
             on_new_session,
             on_send,
@@ -533,6 +767,12 @@ async fn bootstrap(mut ui: Ui) -> Result<mpsc::Receiver<()>, dsh_transport::Tran
     let (disconnect_tx, disconnect_rx) = mpsc::channel::<()>(1);
     let mut approvals = ui.approvals;
     let mut questions = ui.questions;
+
+    ui.projections.set(ProjectionStore::new());
+    ui.subagent_tree.set(HashMap::new());
+    ui.subagent_expanded.set(Vec::new());
+    ui.lineage.set(Vec::new());
+    ui.aside.set(None);
 
     if let Ok(mut events) = handle.open_events() {
         if let Some(client_id) = handle.await_ready(&mut events).await {
@@ -585,6 +825,38 @@ async fn bootstrap(mut ui: Ui) -> Result<mpsc::Receiver<()>, dsh_transport::Tran
         });
     }
 
+    // 子 Agent 状态的实时来源：baseline 全量替换 + projection 增量。
+    if let Ok(mut control) = handle.open_control() {
+        let mut projections = ui.projections;
+        let mut tree = ui.subagent_tree;
+        spawn(async move {
+            while let Some(event) = control.next().await {
+                match event {
+                    StreamEvent::Frame(value) => {
+                        let Ok(frame) = serde_json::from_value::<SessionControlFrame>(value) else {
+                            continue;
+                        };
+                        projections.write().apply_control(&frame);
+
+                        // 只重算已经加载过的目录；未展开的分支等展开时再读。
+                        let store = projections.read().clone();
+                        let mut tree = tree.write();
+                        for (parent_id, rows) in tree.iter_mut() {
+                            if let Some(catalog) = store.get(parent_id, "subagentCatalog") {
+                                *rows = map::catalog_rows(parent_id, catalog, &store);
+                            }
+                        }
+                    }
+                    StreamEvent::Error(err) => {
+                        tracing::warn!(%err, "session/control 流出错");
+                        break;
+                    }
+                    StreamEvent::End => break,
+                }
+            }
+        });
+    }
+
     let mut list = handle.list_sessions().await?;
     tracing::info!(count = list.len(), "session/list 完成");
 
@@ -616,13 +888,20 @@ async fn bootstrap(mut ui: Ui) -> Result<mpsc::Receiver<()>, dsh_transport::Tran
     ui.all_sessions
         .set(list.iter().map(map::to_summary).collect());
     let archived_now = (ui.archived)();
-    let first_visible = list
-        .iter()
-        .find(|item| !archived_now.contains(&item.session_id.as_str().to_string()));
+    let first_visible = list.iter().find(|item| {
+        item.origin.as_deref() != Some("subagent")
+            && !archived_now.contains(&item.session_id.as_str().to_string())
+    });
     if let Some(first) = first_visible {
         let session_id = first.session_id.as_str().to_string();
         ui.active.set(Some(session_id.clone()));
-        spawn_follow(Arc::clone(&handle), session_id.clone(), ui);
+        ui.active_address
+            .set(Some(SessionAddress::session(session_id.clone())));
+        spawn_follow(
+            Arc::clone(&handle),
+            SessionAddress::session(session_id.clone()),
+            ui,
+        );
 
         // 右栏文件树：path 不能为空（网关返回 "path is required"），用会话 cwd 作根
         let root = first.cwd.clone().unwrap_or_else(|| ".".to_string());
@@ -670,12 +949,61 @@ async fn bootstrap(mut ui: Ui) -> Result<mpsc::Receiver<()>, dsh_transport::Tran
         }]);
     }
 
+    // 调试：注入一棵假目录，便于无模型时验证目录/耗时/用量渲染。
+    if std::env::var("DSH_FAKE_SUBAGENT").is_ok()
+        && let Some(parent) = (ui.active)()
+    {
+        let mut projections = ui.projections;
+        spawn(async move {
+            // 等 control baseline 落地后再注入，避免被整窗替换掉。
+            tokio::time::sleep(Duration::from_millis(1200)).await;
+            projections.write().seed(
+                    &parent,
+                    serde_json::json!({
+                        "title": "父会话",
+                        "subagentCatalog": [
+                            { "id": "session-fake-worker", "createdAt": 1, "mode": "continuable", "label": "worker" },
+                            { "id": "session-fake-review", "createdAt": 2, "mode": "one-shot", "label": "reviewer" },
+                            { "id": "session-fake-ext", "createdAt": 3, "mode": "external", "label": "external-task" }
+                        ]
+                    }),
+                );
+            projections.write().seed(
+                "session-fake-worker",
+                serde_json::json!({
+                    "subagentTiming": {
+                        "settledMs": 4200,
+                        "active": { "since": 1000, "through": 3000 },
+                        "lastTurnCompleted": false
+                    },
+                    "tokenUsage": {
+                        "uncachedInputTokens": 1200,
+                        "outputTokens": 340,
+                        "cacheReadTokens": 800,
+                        "cacheWriteTokens": 0
+                    }
+                }),
+            );
+            projections.write().seed(
+                "session-fake-review",
+                serde_json::json!({
+                    "subagentTiming": { "settledMs": 8000, "lastTurnCompleted": true },
+                    "tokenUsage": { "uncachedInputTokens": 500, "outputTokens": 120 }
+                }),
+            );
+        });
+    }
+
     ui.client.set(Some(handle));
     Ok(disconnect_rx)
 }
 
 /// 打开会话事件流并归约。
-fn spawn_follow(handle: Arc<DshClient>, session_id: String, ui: Ui) {
+fn spawn_follow(handle: Arc<DshClient>, address: SessionAddress, ui: Ui) {
+    let session_id = address.session_id().as_str().to_string();
+    let is_subagent = address.is_subagent();
+    let mut projections = ui.projections;
+    let mut subagent_tree = ui.subagent_tree;
     let mut messages = ui.messages;
     let mut trajectory = ui.trajectory;
     let mut running = ui.running;
@@ -684,9 +1012,10 @@ fn spawn_follow(handle: Arc<DshClient>, session_id: String, ui: Ui) {
     let mut context_usage = ui.context_usage;
     let mut has_more = ui.has_more;
     let mut shared_view = ui.view;
+    let active = ui.active;
 
     spawn(async move {
-        let Ok(mut stream) = handle.follow(session_id) else {
+        let Ok(mut stream) = handle.follow_address(address) else {
             return;
         };
         let mut view = SessionView::new();
@@ -701,27 +1030,54 @@ fn spawn_follow(handle: Arc<DshClient>, session_id: String, ui: Ui) {
                     };
                     view.apply(frame);
 
+                    let is_active = active.read().as_deref() == Some(session_id.as_str());
+
                     if !announced {
                         announced = true;
-                        tracing::info!(entries = view.len(), cursor = view.cursor, "follow 已就绪");
-                        let fallback = view
-                            .header
-                            .as_ref()
-                            .and_then(|header| header.cwd.as_deref())
-                            .and_then(|cwd| cwd.rsplit('/').find(|seg| !seg.is_empty()))
-                            .unwrap_or("会话")
-                            .to_string();
-                        active_title.set(map::title(&view).unwrap_or(fallback));
+                        tracing::info!(
+                            entries = view.len(),
+                            cursor = view.cursor,
+                            %session_id,
+                            "follow 已就绪"
+                        );
+                        let title = if is_subagent {
+                            map::subagent_title(&view).unwrap_or_else(|| session_id.clone())
+                        } else {
+                            let fallback = view
+                                .header
+                                .as_ref()
+                                .and_then(|header| header.cwd.as_deref())
+                                .and_then(|cwd| cwd.rsplit('/').find(|seg| !seg.is_empty()))
+                                .unwrap_or("会话")
+                                .to_string();
+                            map::title(&view).unwrap_or(fallback)
+                        };
+                        if is_active {
+                            active_title.set(title);
+                        }
+
+                        // 用 snapshot 种下 projection；父会话顺带初始化目录。
+                        // 这部分与当前选中会话无关，重连后也需要。
+                        projections
+                            .write()
+                            .seed(&session_id, view.projections.clone());
+                        if let Some(catalog) = view.projection("subagentCatalog") {
+                            let store = projections.read().clone();
+                            let rows = map::catalog_rows(&session_id, catalog, &store);
+                            subagent_tree.write().insert(session_id.clone(), rows);
+                        }
                     }
 
-                    running.set(view.live.is_some());
                     if last_flush.elapsed() >= Duration::from_millis(50) {
-                        messages.set(map::rows(&view));
-                        trajectory.set(map::trajectory(&view));
-                        queue.set(map::queue_items(&view));
-                        context_usage.set(map::context_usage(&view));
-                        has_more.set(view.has_more);
-                        shared_view.set(Some(view.clone()));
+                        if is_active {
+                            running.set(view.live.is_some());
+                            messages.set(map::rows(&view));
+                            trajectory.set(map::trajectory(&view));
+                            queue.set(map::queue_items(&view));
+                            context_usage.set(map::context_usage(&view));
+                            has_more.set(view.has_more);
+                            shared_view.set(Some(view.clone()));
+                        }
                         last_flush = Instant::now();
                     }
                 }
@@ -733,8 +1089,86 @@ fn spawn_follow(handle: Arc<DshClient>, session_id: String, ui: Ui) {
             }
         }
 
-        running.set(false);
-        messages.set(map::rows(&view));
-        trajectory.set(map::trajectory(&view));
+        if active.read().as_deref() == Some(session_id.as_str()) {
+            running.set(false);
+            messages.set(map::rows(&view));
+            trajectory.set(map::trajectory(&view));
+        }
     });
+}
+
+/// 读取某个父会话的 projection，并刷新它的目录缓存。
+fn refresh_catalog(handle: Arc<DshClient>, parent_id: String, ui: Ui) {
+    let mut projections = ui.projections;
+    let mut tree = ui.subagent_tree;
+
+    spawn(async move {
+        match handle.refresh_projections(&parent_id).await {
+            Ok(value) => {
+                projections.write().seed_result(&parent_id, &value);
+                let store = projections.read().clone();
+                if let Some(catalog) = store.get(&parent_id, "subagentCatalog") {
+                    let rows = map::catalog_rows(&parent_id, catalog, &store);
+                    tree.write().insert(parent_id.clone(), rows);
+                }
+            }
+            Err(err) => tracing::warn!(%err, %parent_id, "子 Agent 目录加载失败"),
+        }
+    });
+}
+
+/// 在右栏侧开一个子会话（只读副本，续聊仍在主面板）。
+fn spawn_aside_follow(handle: Arc<DshClient>, address: SessionAddress, ui: Ui) {
+    let mut aside = ui.aside;
+    let session_id = address.session_id().as_str().to_string();
+
+    spawn(async move {
+        let Ok(mut stream) = handle.follow_address(address) else {
+            return;
+        };
+        let mut view = SessionView::new();
+        let mut last_flush = Instant::now();
+
+        while let Some(event) = stream.next().await {
+            match event {
+                StreamEvent::Frame(value) => {
+                    let Ok(frame) = serde_json::from_value::<SessionFollowFrame>(value) else {
+                        continue;
+                    };
+                    view.apply(frame);
+
+                    if last_flush.elapsed() >= Duration::from_millis(100) {
+                        publish_aside(&mut aside, &session_id, &view);
+                        last_flush = Instant::now();
+                    }
+                }
+                StreamEvent::Error(err) => {
+                    tracing::warn!(%err, "右栏子会话流出错");
+                    break;
+                }
+                StreamEvent::End => break,
+            }
+        }
+
+        publish_aside(&mut aside, &session_id, &view);
+    });
+}
+
+/// 只在右栏仍展示该会话时写入，避免旧流覆盖后来打开的会话。
+fn publish_aside(aside: &mut Signal<Option<AsideChat>>, session_id: &str, view: &SessionView) {
+    let still_current = aside
+        .read()
+        .as_ref()
+        .map(|chat| chat.id == session_id)
+        .unwrap_or(false);
+    if !still_current {
+        return;
+    }
+    let title = map::subagent_title(view).unwrap_or_else(|| session_id.to_string());
+    aside.set(Some(AsideChat {
+        id: session_id.to_string(),
+        title,
+        messages: map::rows(view),
+        running: view.live.is_some(),
+    }));
 }

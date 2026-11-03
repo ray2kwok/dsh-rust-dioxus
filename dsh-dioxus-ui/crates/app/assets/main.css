@@ -58,6 +58,8 @@ a:focus-visible {
 /* ---------------------------------------------------------------- 骨架 */
 
 .shell {
+  --shell-sidebar: 280px;
+  --shell-rightbar: 0px;
   display: flex;
   height: calc(100vh - 30px);
 }
@@ -70,6 +72,14 @@ a:focus-visible {
   background: var(--dsw-alias-bg-layer-1);
   border-right: 1px solid var(--dsw-alias-border-l2);
   overflow: hidden;
+}
+
+.shell--collapsed {
+  --shell-sidebar: 56px;
+}
+
+.shell--rightbar {
+  --shell-rightbar: 320px;
 }
 
 .shell--collapsed .sidebar {
@@ -1146,4 +1156,397 @@ body[data-ds-dark-theme] .tok--fn {
 .diff-text {
   flex: 1;
   overflow-x: auto;
+}
+
+/* ---------------------------------------------------------------- 子 Agent 目录 */
+
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.breadcrumb__item {
+  border: none;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 2px 4px;
+  border-radius: 5px;
+  cursor: pointer;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.breadcrumb__item:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+.breadcrumb__sep {
+  color: var(--dsw-alias-label-caption);
+}
+
+.subagent-catalog {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.subagent-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: var(--dsw-radius-sm);
+  border: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.subagent-trigger:hover,
+.subagent-trigger--open {
+  color: var(--dsw-alias-label-primary);
+  border-color: var(--dsw-alias-border-l2);
+}
+
+.subagent-trigger__count {
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-1);
+  text-align: center;
+  font-size: 11px;
+}
+
+.subagent-menu {
+  position: absolute;
+  top: 32px;
+  right: 0;
+  z-index: 40;
+  width: 330px;
+  max-height: 52vh;
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-1);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+.subagent-menu__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px 6px;
+  font-size: 11px;
+}
+
+.subagent-empty {
+  padding: 12px 8px;
+}
+
+.subagent-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: var(--dsw-radius-sm);
+}
+
+.subagent-row:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.subagent-row__toggle {
+  width: 18px;
+  height: 24px;
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--dsw-alias-label-caption);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.subagent-row__toggle:disabled {
+  opacity: 0;
+  cursor: default;
+}
+
+.subagent-row__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  padding: 4px;
+  cursor: pointer;
+}
+
+.subagent-row__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subagent-row__meta {
+  color: var(--dsw-alias-label-caption);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.subagent-row__aside {
+  flex: 0 0 auto;
+  opacity: 0;
+}
+
+.subagent-row:hover .subagent-row__aside {
+  opacity: 1;
+}
+
+.subagent-mode {
+  font-size: 10px;
+  padding: 0 4px;
+  border-radius: 4px;
+  color: var(--dsw-alias-label-caption);
+  background: var(--dsw-alias-bg-layer-2);
+  white-space: nowrap;
+}
+
+.subagent-mode--continuable {
+  color: var(--dsw-alias-state-success-primary);
+}
+
+.composer--readonly {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.composer__notice {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12.5px;
+  padding: 4px 2px;
+}
+
+/* ---------------------------------------------------------------- 右栏子会话 */
+
+.aside-chat {
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md);
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+
+.aside-chat__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-layer-2);
+}
+
+.aside-chat__title {
+  font-size: 12.5px;
+  font-weight: 550;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aside-chat__body {
+  max-height: 42vh;
+  overflow: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.aside-msg {
+  display: flex;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.aside-msg__role {
+  flex: 0 0 auto;
+  min-width: 28px;
+}
+
+.aside-msg__text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.subagent-row__main:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* ---------------------------------------------------------------- 子 Agent 关系图 */
+
+.subagent-view-switch {
+  flex: 0 0 auto;
+}
+
+.subagent-menu--graph {
+  position: fixed;
+  top: 58px;
+  left: calc(var(--shell-sidebar) + 16px);
+  right: calc(var(--shell-rightbar) + 16px);
+  transform: none;
+  width: auto;
+  max-width: none;
+  margin: 0;
+  max-height: calc(100vh - 120px);
+}
+
+.subagent-graph-scroll {
+  max-height: 420px;
+  overflow: auto;
+  padding: 4px 2px 2px;
+}
+
+.subagent-graph {
+  position: relative;
+  margin: 0 auto;
+}
+
+.subagent-graph__edges {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.sg-edge {
+  fill: none;
+  stroke: var(--dsw-alias-border-l3);
+  stroke-width: 1.2;
+}
+
+.subagent-node {
+  position: absolute;
+  width: 196px;
+  height: 48px;
+  box-sizing: border-box;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+}
+
+.subagent-node--root {
+  border-style: dashed;
+  background: var(--dsw-alias-bg-layer-2);
+}
+
+.subagent-node--running {
+  border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 55%, var(--dsw-alias-border-l2));
+}
+
+.subagent-node--completed {
+  border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary) 45%, var(--dsw-alias-border-l2));
+}
+
+.subagent-node--external {
+  opacity: 0.65;
+}
+
+.subagent-node__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 7px 8px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.subagent-node__main:disabled {
+  cursor: default;
+}
+
+.subagent-node__text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-right: 40px;
+}
+
+.subagent-node__label {
+  font-size: 12px;
+  font-weight: 550;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subagent-node__meta {
+  font-size: 10.5px;
+  color: var(--dsw-alias-label-caption);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.subagent-node__more,
+.subagent-node__aside {
+  position: absolute;
+  top: 4px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.subagent-node__more {
+  right: 4px;
+}
+
+.subagent-node__aside {
+  right: 22px;
+}
+
+.subagent-graph-entry {
+  flex: 0 0 auto;
+  margin-left: -4px;
 }

@@ -12,15 +12,21 @@
 
 use std::time::Duration;
 
-use dsh_proto::endpoint::{API_PREFIX, files as files_ep, session as session_ep};
+use dsh_proto::endpoint::{
+    API_PREFIX, files as files_ep, session as session_ep, subagent as subagent_ep,
+};
 use dsh_proto::events::{
     ApprovalOutcome, EventOutcome, REMOTE_EVENT_RESULT_ENDPOINT, REMOTE_EVENT_STREAM_ENDPOINT,
     RemoteEventFrame, RemoteEventResult,
 };
 use dsh_proto::session::{
-    PromptContent, PromptMode, QueueAction, SessionCreateRequest, SessionCreateValue,
-    SessionFollowFrame, SessionListValue, SessionPromptRequest, SessionPromptValue, SessionSummary,
-    SessionUpdateQueueRequest,
+    PromptContent, PromptMode, QueueAction, SessionAddress, SessionCreateRequest,
+    SessionCreateValue, SessionFollowFrame, SessionFollowRequest, SessionListValue,
+    SessionProjectionsValue, SessionPromptRequest, SessionPromptValue, SessionSummary,
+    SessionUpdateQueueRequest, SubagentMode,
+};
+use dsh_proto::subagent::{
+    SubagentInterruptRequest, SubagentInterruptValue, SubagentPromptRequest, SubagentPromptValue,
 };
 use dsh_state::SessionView;
 use dsh_transport::{
@@ -139,9 +145,12 @@ impl DshClient {
 
     /// 打开会话事件流（快照 + 增量 + 流式）。
     pub fn follow(&self, session_id: impl Into<String>) -> Result<StreamHandle, TransportError> {
-        let request = dsh_proto::session::SessionFollowRequest::open_default(
-            dsh_proto::session::SessionId::new(session_id),
-        );
+        self.follow_address(SessionAddress::session(session_id.into()))
+    }
+
+    /// 用完整地址打开会话流；子会话必须携带 parent + mode。
+    pub fn follow_address(&self, address: SessionAddress) -> Result<StreamHandle, TransportError> {
+        let request = SessionFollowRequest::open_address(address);
         self.mux
             .open_args(session_ep::FOLLOW, json!({ "request": request }))
     }
@@ -173,6 +182,76 @@ impl DshClient {
     /// 打开 `$events`（连接代次与审批 waterfall 的来源）。
     pub fn open_events(&self) -> Result<StreamHandle, TransportError> {
         self.mux.open_args(REMOTE_EVENT_STREAM_ENDPOINT, json!({}))
+    }
+
+    /// 打开 `session/control`（全 Host projection 基线 + 增量）。
+    pub fn open_control(&self) -> Result<StreamHandle, TransportError> {
+        self.mux.open_args(session_ep::CONTROL, json!({}))
+    }
+
+    /// 按需刷新一个会话的 projection（子目录展开 / 失败重试）。
+    pub async fn refresh_projections(
+        &self,
+        session_id: impl Into<String>,
+    ) -> Result<SessionProjectionsValue, TransportError> {
+        self.rpc
+            .call::<SessionProjectionsValue>(
+                session_ep::PROJECTIONS,
+                json!({ "request": { "sessionId": session_id.into() } }),
+            )
+            .await?
+            .ok_or_else(|| TransportError::Protocol("session/projections 未返回结果".into()))
+    }
+
+    /// 向 continuable 子会话续聊。返回被接受的消息 id。
+    pub async fn prompt_subagent(
+        &self,
+        parent_session_id: impl Into<String>,
+        child_session_id: impl Into<String>,
+        mode: SubagentMode,
+        text: impl Into<String>,
+        delivery: PromptMode,
+    ) -> Result<String, TransportError> {
+        let request = SubagentPromptRequest {
+            request_id: uuid::Uuid::new_v4().to_string(),
+            parent_session_id: dsh_proto::session::SessionId::new(parent_session_id),
+            child_session_id: dsh_proto::session::SessionId::new(child_session_id),
+            mode,
+            delivery,
+            content: vec![PromptContent::text(text)],
+            client_time_zone: None,
+        };
+        let value = self
+            .rpc
+            .call::<SubagentPromptValue>(subagent_ep::PROMPT, json!({ "request": request }))
+            .await?
+            .ok_or_else(|| TransportError::Protocol("subagent/prompt 未返回结果".into()))?;
+        Ok(value.message_id)
+    }
+
+    /// 独立停止 continuable 子会话的当前 turn（不动父会话）。
+    pub async fn interrupt_subagent(
+        &self,
+        parent_session_id: impl Into<String>,
+        child_session_id: impl Into<String>,
+        mode: SubagentMode,
+    ) -> Result<bool, TransportError> {
+        let request = SubagentInterruptRequest {
+            child_session_id: dsh_proto::session::SessionId::new(child_session_id),
+            parent_session_id: dsh_proto::session::SessionId::new(parent_session_id),
+            mode,
+        };
+        let value = self
+            .rpc
+            .call::<SubagentInterruptValue>(
+                subagent_ep::INTERRUPT_BY_PARENT,
+                serde_json::to_value(request)?,
+            )
+            .await?
+            .ok_or_else(|| {
+                TransportError::Protocol("subagent/interruptByParent 未返回结果".into())
+            })?;
+        Ok(value.accepted)
     }
 
     /// 把一条流的帧喂给 `SessionView`，返回本次消费的帧数。
@@ -416,10 +495,23 @@ impl DshClient {
         before_seq: u64,
         max_messages: u32,
     ) -> Result<dsh_proto::session::SessionPage, TransportError> {
+        self.page_before_address(
+            SessionAddress::session(session_id.into()),
+            before_seq,
+            max_messages,
+        )
+        .await
+    }
+
+    /// 用完整地址翻历史（子会话必须带 parent + mode）。
+    pub async fn page_before_address(
+        &self,
+        address: SessionAddress,
+        before_seq: u64,
+        max_messages: u32,
+    ) -> Result<dsh_proto::session::SessionPage, TransportError> {
         let request = dsh_proto::session::SessionPageRequest {
-            address: dsh_proto::session::SessionAddress::session(
-                dsh_proto::session::SessionId::new(session_id),
-            ),
+            address,
             through_seq: None,
             before_seq: Some(before_seq),
             max_messages: Some(max_messages),

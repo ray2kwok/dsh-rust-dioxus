@@ -9,7 +9,9 @@
 //! 2. durable 事件的 `surfaceOp: { op: "replace", startSeq, endSeq }` 表示
 //!    「用本事件替换区间」，compaction 依赖这一语义，不能简单 append。
 
-use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 /// 会话标识。
@@ -36,6 +38,12 @@ impl std::fmt::Display for SessionId {
 impl From<&str> for SessionId {
     fn from(value: &str) -> Self {
         Self(value.to_owned())
+    }
+}
+
+impl From<String> for SessionId {
+    fn from(value: String) -> Self {
+        Self(value)
     }
 }
 
@@ -158,15 +166,92 @@ impl SessionAddress {
             session_id: session_id.into(),
         }
     }
+
+    /// 子会话地址：父会话 + 子会话 + 可继续性。
+    pub fn subagent(
+        parent_session_id: impl Into<SessionId>,
+        child_session_id: impl Into<SessionId>,
+        mode: SubagentMode,
+    ) -> Self {
+        Self::Subagent {
+            parent_session_id: parent_session_id.into(),
+            child_session_id: child_session_id.into(),
+            mode,
+        }
+    }
+
+    /// 地址指向的会话 id（普通会话或子会话）。
+    pub fn session_id(&self) -> &SessionId {
+        match self {
+            SessionAddress::Session { session_id } => session_id,
+            SessionAddress::Subagent {
+                child_session_id, ..
+            } => child_session_id,
+        }
+    }
+
+    pub fn parent_session_id(&self) -> Option<&SessionId> {
+        match self {
+            SessionAddress::Session { .. } => None,
+            SessionAddress::Subagent {
+                parent_session_id, ..
+            } => Some(parent_session_id),
+        }
+    }
+
+    pub fn mode(&self) -> Option<SubagentMode> {
+        match self {
+            SessionAddress::Session { .. } => None,
+            SessionAddress::Subagent { mode, .. } => Some(*mode),
+        }
+    }
+
+    pub fn is_subagent(&self) -> bool {
+        matches!(self, SessionAddress::Subagent { .. })
+    }
 }
 
-/// subagent 的可继续性。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// subagent 的生命周期模式。
+///
+/// 线上是 `one-shot` / `continuable` / `external` / 未知字符串。
+/// 未知值统一落到 [`SubagentMode::Unknown`]，避免一个陌生子会话让整棵目录解析失败。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SubagentMode {
     OneShot,
     Continuable,
+    External,
     Unknown,
+}
+
+impl<'de> Deserialize<'de> for SubagentMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Ok(match raw.as_str() {
+            "one-shot" => Self::OneShot,
+            "continuable" => Self::Continuable,
+            "external" => Self::External,
+            _ => Self::Unknown,
+        })
+    }
+}
+
+impl SubagentMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OneShot => "one-shot",
+            Self::Continuable => "continuable",
+            Self::External => "external",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn is_continuable(self) -> bool {
+        matches!(self, Self::Continuable)
+    }
 }
 
 /// `session/list` 里的一条会话摘要。
@@ -325,8 +410,13 @@ pub struct SessionFollowRequest {
 impl SessionFollowRequest {
     /// 上游默认打开参数：`activate + assistantStream + maxMessages=500 + turnWindow(50,2)`。
     pub fn open_default(session_id: impl Into<SessionId>) -> Self {
+        Self::open_address(SessionAddress::session(session_id))
+    }
+
+    /// 用完整地址打开（子会话必须携带 parent + mode）。
+    pub fn open_address(address: SessionAddress) -> Self {
         Self {
-            address: SessionAddress::session(session_id),
+            address,
             activate: Some(true),
             assistant_stream: Some(true),
             max_messages: Some(500),
@@ -364,6 +454,86 @@ pub struct SessionPage {
 pub struct SessionProjectionBaseline {
     pub as_of_seq: u64,
     pub values: Value,
+}
+
+/// `session/projections` 的返回。
+///
+/// 上游：`packages/api/session-controller/src/types.ts`（`SessionProjectionsResult`）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum SessionProjectionsValue {
+    /// 可用的 projection 切点。
+    Sequenced {
+        values: Value,
+        #[serde(rename = "asOfSeq")]
+        as_of_seq: u64,
+    },
+    /// 历史需要迁移；只能使用缓存值，不提供切点。
+    MigrationRequired {
+        #[serde(default)]
+        values: Value,
+    },
+}
+
+impl SessionProjectionsValue {
+    pub fn values(&self) -> &Value {
+        match self {
+            Self::Sequenced { values, .. } | Self::MigrationRequired { values } => values,
+        }
+    }
+}
+
+/// `session/control` 的打开基线：全 Host 每个会话的 projection 快照。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionControlBaseline {
+    pub projections: HashMap<String, SessionProjectionBaseline>,
+}
+
+/// `session/control` 下行的增量。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionProjectionUpdate {
+    pub session_id: SessionId,
+    pub key: String,
+    pub value: Value,
+    pub seq: u64,
+}
+
+/// `session/control` 下行帧（子 Agent 状态的实时来源）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum SessionControlFrame {
+    Baseline {
+        value: SessionControlBaseline,
+    },
+    Projection {
+        #[serde(rename = "sessionId")]
+        session_id: SessionId,
+        key: String,
+        value: Value,
+        seq: u64,
+    },
+}
+
+impl SessionControlFrame {
+    /// 增量帧转为统一结构（baseline 返回 `None`）。
+    pub fn update(&self) -> Option<SessionProjectionUpdate> {
+        match self {
+            Self::Baseline { .. } => None,
+            Self::Projection {
+                session_id,
+                key,
+                value,
+                seq,
+            } => Some(SessionProjectionUpdate {
+                session_id: session_id.clone(),
+                key: key.clone(),
+                value: value.clone(),
+                seq: *seq,
+            }),
+        }
+    }
 }
 
 /// `session/follow` 下行帧。
@@ -634,6 +804,80 @@ mod tests {
             serde_json::to_value(&request).unwrap(),
             json!({ "cwd": "/home/me/proj" })
         );
+    }
+
+    #[test]
+    fn subagent_follow_address_keeps_parent_and_mode() {
+        let request = SessionFollowRequest::open_address(SessionAddress::subagent(
+            SessionId::new("parent"),
+            SessionId::new("child"),
+            SubagentMode::Continuable,
+        ));
+        assert_eq!(
+            serde_json::to_value(&request).unwrap()["address"],
+            json!({
+                "kind": "subagent",
+                "parentSessionId": "parent",
+                "childSessionId": "child",
+                "mode": "continuable"
+            })
+        );
+        assert_eq!(request.address.session_id().as_str(), "child");
+        assert_eq!(
+            request.address.parent_session_id().map(SessionId::as_str),
+            Some("parent")
+        );
+        assert!(request.address.is_subagent());
+    }
+
+    #[test]
+    fn projections_value_parses_sequenced_and_migration() {
+        let sequenced: SessionProjectionsValue = serde_json::from_value(json!({
+            "kind": "sequenced",
+            "asOfSeq": 42,
+            "values": { "title": "hello" }
+        }))
+        .unwrap();
+        assert_eq!(sequenced.values()["title"], "hello");
+
+        let migration: SessionProjectionsValue = serde_json::from_value(json!({
+            "kind": "migration-required",
+            "values": { "title": "cached" }
+        }))
+        .unwrap();
+        assert_eq!(migration.values()["title"], "cached");
+    }
+
+    #[test]
+    fn control_frames_parse_baseline_and_projection() {
+        let baseline: SessionControlFrame = serde_json::from_value(json!({
+            "type": "baseline",
+            "value": {
+                "projections": {
+                    "s1": { "asOfSeq": 3, "values": { "title": "parent" } }
+                }
+            }
+        }))
+        .unwrap();
+        match baseline {
+            SessionControlFrame::Baseline { value } => {
+                assert_eq!(value.projections["s1"].values["title"], "parent");
+            }
+            other => panic!("期望 baseline，实际 {other:?}"),
+        }
+
+        let update: SessionControlFrame = serde_json::from_value(json!({
+            "type": "projection",
+            "sessionId": "child",
+            "key": "subagentTiming",
+            "value": { "settledMs": 12 },
+            "seq": 9
+        }))
+        .unwrap();
+        let update = update.update().expect("projection 帧应有增量");
+        assert_eq!(update.session_id.as_str(), "child");
+        assert_eq!(update.key, "subagentTiming");
+        assert_eq!(update.seq, 9);
     }
 }
 

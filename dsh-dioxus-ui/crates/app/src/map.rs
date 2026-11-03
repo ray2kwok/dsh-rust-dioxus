@@ -4,11 +4,14 @@
 //! 而具体消息形状要等真实 prompt 事件才能确认。这里按
 //! 「已知字段优先、未知结构降级」的顺序提取，保证任何事件都能渲染出东西。
 
-use dsh_proto::session::{SessionSummary as WireSummary, SessionWireEvent};
-use dsh_state::SessionView;
+use dsh_proto::session::{
+    SessionSummary as WireSummary, SessionWireEvent, SubagentMode as WireMode,
+};
+use dsh_proto::subagent::{SubagentCatalogEntry, SubagentTiming, TokenUsage};
+use dsh_state::{ProjectionStore, SessionView};
 use dsh_ui::{
     ApprovalItem, MessageRow, QuestionCard, QuestionItemView, QueueItem, Role, SessionStatus,
-    SessionSummary, TrajectoryRow,
+    SessionSummary, SubagentMode, SubagentRow, SubagentState, TrajectoryRow,
 };
 use serde_json::Value;
 
@@ -38,7 +41,87 @@ pub fn to_summary(wire: &WireSummary) -> SessionSummary {
             .unwrap_or_else(|| "未分组".to_string()),
         status,
         updated: format_time(wire.updated_at),
+        parent_id: wire
+            .parent_session_id
+            .as_ref()
+            .map(|id| id.as_str().to_string()),
+        is_subagent: wire.origin.as_deref() == Some("subagent"),
     }
+}
+
+/// 子 Agent 模式（wire → 视图）。
+pub fn ui_mode(mode: WireMode) -> SubagentMode {
+    match mode {
+        WireMode::OneShot => SubagentMode::OneShot,
+        WireMode::Continuable => SubagentMode::Continuable,
+        WireMode::External => SubagentMode::External,
+        WireMode::Unknown => SubagentMode::Unknown,
+    }
+}
+
+/// 子 Agent 模式（视图 → wire）。
+pub fn wire_mode(mode: SubagentMode) -> WireMode {
+    match mode {
+        SubagentMode::OneShot => WireMode::OneShot,
+        SubagentMode::Continuable => WireMode::Continuable,
+        SubagentMode::External => WireMode::External,
+        SubagentMode::Unknown => WireMode::Unknown,
+    }
+}
+
+/// `subagentCatalog` + 子会话的 timing/tokenUsage → 目录行。
+///
+/// 目录成员来自父会话（`parent_id`），每行的实时数据来自子会话自己的
+/// `subagentTiming` / `tokenUsage`，两者都在 [`ProjectionStore`] 里。
+pub fn catalog_rows(parent_id: &str, catalog: &Value, store: &ProjectionStore) -> Vec<SubagentRow> {
+    let Ok(entries) = serde_json::from_value::<Vec<SubagentCatalogEntry>>(catalog.clone()) else {
+        return Vec::new();
+    };
+
+    entries
+        .into_iter()
+        .map(|entry| {
+            let id = entry.id.as_str().to_string();
+            let timing = store
+                .get(&id, "subagentTiming")
+                .and_then(|value| serde_json::from_value::<SubagentTiming>(value.clone()).ok())
+                .unwrap_or_default();
+            let tokens = store
+                .get(&id, "tokenUsage")
+                .and_then(|value| serde_json::from_value::<TokenUsage>(value.clone()).ok())
+                .map(|usage| usage.total())
+                .unwrap_or(0);
+
+            let state = if timing.is_running() {
+                SubagentState::Running
+            } else if timing.last_turn_completed == Some(true) {
+                SubagentState::Completed
+            } else {
+                SubagentState::Idle
+            };
+
+            SubagentRow {
+                id: id.clone(),
+                parent_id: parent_id.to_string(),
+                mode: ui_mode(entry.mode),
+                label: entry.label.unwrap_or(id),
+                state,
+                elapsed_ms: timing.elapsed_ms(),
+                tokens,
+            }
+        })
+        .collect()
+}
+
+/// 子会话标题：优先 descriptor 的 label，其次 `title` projection。
+pub fn subagent_title(view: &SessionView) -> Option<String> {
+    view.projection("subagent")
+        .and_then(|value| value.get("label"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+        .map(str::to_string)
+        .or_else(|| title(view))
 }
 
 /// `approval/request` waterfall → 审批卡片。
@@ -353,5 +436,59 @@ mod tests {
     fn control_events_without_text_are_hidden() {
         assert!(to_row(&event("turn/start", json!({ "turn": 1 }))).is_some());
         assert!(to_row(&event("request/header", json!({}))).is_none());
+    }
+
+    #[test]
+    fn catalog_rows_merge_timing_and_usage() {
+        let mut store = ProjectionStore::new();
+        store.seed(
+            "child",
+            json!({
+                "subagentTiming": {
+                    "settledMs": 1000,
+                    "active": { "since": 2000, "through": 3000 }
+                },
+                "tokenUsage": {
+                    "uncachedInputTokens": 10,
+                    "outputTokens": 20,
+                    "cacheReadTokens": 3,
+                    "cacheWriteTokens": 4
+                }
+            }),
+        );
+
+        let rows = catalog_rows(
+            "parent",
+            &json!([
+                { "id": "child", "createdAt": 1, "mode": "continuable", "label": "worker" },
+                { "id": "ext-1", "createdAt": 2, "mode": "external" }
+            ]),
+            &store,
+        );
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].label, "worker");
+        assert_eq!(rows[0].state, SubagentState::Running);
+        assert_eq!(rows[0].elapsed_ms, 2000);
+        assert_eq!(rows[0].tokens, 37);
+        assert_eq!(rows[1].mode, SubagentMode::External);
+        assert_eq!(rows[1].label, "ext-1", "无 label 时回退 session id");
+    }
+
+    #[test]
+    fn summary_marks_subagent_origin() {
+        let wire: WireSummary = serde_json::from_value(json!({
+            "agentAvailable": true,
+            "sessionId": "child",
+            "updatedAt": 1,
+            "running": false,
+            "blank": false,
+            "parentSessionId": "parent",
+            "origin": "subagent"
+        }))
+        .unwrap();
+        let summary = to_summary(&wire);
+        assert!(summary.is_subagent);
+        assert_eq!(summary.parent_id.as_deref(), Some("parent"));
     }
 }

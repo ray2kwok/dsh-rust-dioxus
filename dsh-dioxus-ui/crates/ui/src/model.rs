@@ -8,6 +8,10 @@ pub struct SessionSummary {
     pub workspace: String,
     pub status: SessionStatus,
     pub updated: String,
+    /// 子会话的父会话 id；普通会话为 `None`。
+    pub parent_id: Option<String>,
+    /// `session/list` 里的 `origin == "subagent"`；普通侧栏不展示。
+    pub is_subagent: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,4 +194,89 @@ pub struct QuestionCard {
 pub struct QueueItem {
     pub id: String,
     pub text: String,
+}
+
+/// 子 Agent 的生命周期模式（视图层，与 wire 解耦）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubagentMode {
+    OneShot,
+    Continuable,
+    External,
+    Unknown,
+}
+
+impl SubagentMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::OneShot => "one-shot",
+            Self::Continuable => "continuable",
+            Self::External => "external",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn is_continuable(self) -> bool {
+        matches!(self, Self::Continuable)
+    }
+
+    /// 只读：one-shot / unknown / external 都不接受续聊。
+    pub fn is_read_only(self) -> bool {
+        !self.is_continuable()
+    }
+
+    pub fn css_class(self) -> &'static str {
+        match self {
+            Self::OneShot => "subagent-mode subagent-mode--one-shot",
+            Self::Continuable => "subagent-mode subagent-mode--continuable",
+            Self::External => "subagent-mode subagent-mode--external",
+            Self::Unknown => "subagent-mode subagent-mode--unknown",
+        }
+    }
+}
+
+/// 子 Agent 的活动状态（对应上游目录行的三种点）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubagentState {
+    Running,
+    Completed,
+    Idle,
+}
+
+impl SubagentState {
+    pub fn css_class(self) -> &'static str {
+        match self {
+            Self::Running => "dot dot--running",
+            Self::Completed => "dot dot--ok",
+            Self::Idle => "dot dot--idle",
+        }
+    }
+}
+
+/// 子 Agent 目录的一行（父会话的直接子级）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SubagentRow {
+    pub id: String,
+    pub parent_id: String,
+    pub mode: SubagentMode,
+    pub label: String,
+    pub state: SubagentState,
+    /// 已结算时长 + 当前打开 turn 的时长。
+    pub elapsed_ms: u64,
+    /// 四个互斥 token 桶之和。
+    pub tokens: u64,
+}
+
+impl SubagentRow {
+    pub fn is_running(&self) -> bool {
+        self.state == SubagentState::Running
+    }
+}
+
+/// 右栏侧开的子会话（轻量只读副本，续聊仍在主面板）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct AsideChat {
+    pub id: String,
+    pub title: String,
+    pub messages: Vec<MessageRow>,
+    pub running: bool,
 }

@@ -210,13 +210,16 @@ Host 权威状态 → Remote（HTTP unary / WS stream）→ Client model（React
 | F-52 | 计划（plan）卡片：查看任务清单状态 | P1 | 与 plan 事件同步 |
 | F-53 | 子 Agent 目录（集群视图）：父会话 header 显示直接子级数量，展开为可递归的层级目录；每行展示模式（one-shot / continuable / external / unknown）、活动状态、标题、累计用量与本轮耗时 | P2 | 父会话 `subagentCatalog` 非空或读取失败时出现入口；成功加载的空目录不显示；子级按需读取其 projections |
 | F-53b | 打开子会话：点击目录行，以精确地址 `{kind:"subagent", parentSessionId, childSessionId, mode}` 打开子会话；行尾箭头在右栏侧开 | P2 | 子会话的消息、流式、审批与普通会话一致；面包屑可返回父会话 |
-| F-53c | 子会话续聊：continuable 子会话在父会话存活时可直接输入并发送（`subagent/prompt`，delivery 支持 queue / steer），并可独立停止当前 turn（`subagent/interruptByParent`） | P2 | 续聊进入子会话 FIFO；停止只影响子会话，不动父会话 |
+| F-53c | 子会话续聊：continuable 子会话在父会话存活时可直接输入并发送（`subagents/prompt`，delivery 支持 queue / steer），并可独立停止当前 turn（`subagents/interruptByParent`） | P2 | 续聊进入子会话 FIFO；停止只影响子会话，不动父会话 |
 | F-53d | 只读子会话：one-shot / unknown 模式，或父会话不可用且子会话已停止时，输入区降级为只读说明，不提供发送 | P2 | 只读态不发出 prompt；父离线但仍在运行的 continuable 子会话保留停止按钮 |
 | F-53e | 子 Agent 实时状态：运行/完成/空闲状态点、本轮耗时、累计 token 随 projection 帧更新；嵌套层级展开后同样实时 | P2 | 不使用轮询；数据来自 `session/control` 的 baseline + `projection` 增量 |
 | F-53f | 会话列表隔离：普通侧栏不出现 `origin == "subagent"` 的子会话 | P2 | `session/list` 含子会话时按 `origin` 过滤；子会话只能从父会话目录进入 |
 | F-54 | 目标（goal）与调度（schedule）卡片 | P3 | 非多 Agent 主线，见 §5.9 |
 
 **P2 可选（不阻塞 M4 退出）**：子 Agent 委派上限（`subagent` namespace 的 `maxDepth` / `maxActiveSubagents`）与子 Agent 模型选择（`subagent-model-selection`）。上游把它放在 Plugins 页；本项目若做，走 `settings/describe|mutate` 直连 namespace，不依赖插件管理页（F-80 仍在 P3）。
+
+> Agent / Subagent 的关系、创建与管理流程、dsh 端包组合与构建步骤，见
+> [`AGENT_SUBAGENT.md`](AGENT_SUBAGENT.md)。
 
 > **集群范围的边界**：上游实验性 `agent-team` 只有 Host 侧 roster / task board 与工具标题文案，基线 Web 客户端没有团队面板。本期「集群视图」以子 Agent 目录（F-53）为准；若后续 Host 暴露 `agentTeam` projection，再在同一入口扩展。
 
@@ -335,7 +338,7 @@ Host 权威状态 → Remote（HTTP unary / WS stream）→ Client model（React
 - [ ] 单一 Host（`dsh web`）可同时服务上游前端与 dsh-dioxus-ui，互不影响
 - [ ] S1–S7 手工清单全部通过（每项附操作步骤与预期）
 - [ ] S9 多 Agent 清单通过：目录展开、子会话导航、续聊、独立停止、只读态各一条用例
-- [ ] 协议回放测试覆盖 P0 全部 endpoint 与帧类型，以及 P2 的 `subagent/prompt` / `subagent/interruptByParent` / `session/control`
+- [ ] 协议回放测试覆盖 P0 全部 endpoint 与帧类型，以及 P2 的 `subagents/prompt` / `subagents/interruptByParent` / `session/control`
 - [ ] 断网/休眠恢复后会话内容与操作可用
 - [ ] 无 raw HTML 注入执行；token 不出现在日志或磁盘明文
 - [ ] `dx build --platform desktop --release` 可在干净机器复现，产物为单文件且双击可用；浏览器形态另行验证

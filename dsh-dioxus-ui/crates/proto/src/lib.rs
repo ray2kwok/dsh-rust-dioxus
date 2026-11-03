@@ -14,5 +14,6 @@ pub mod envelope;
 pub mod events;
 pub mod session;
 pub mod stream;
+pub mod subagent;
 
 pub use envelope::{Args, ClientRequest, RpcError, RpcResult, ServerResponse};

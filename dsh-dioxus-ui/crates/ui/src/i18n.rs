@@ -77,6 +77,7 @@ pub enum Key {
     StatusRunning,
     StatusWaiting,
     StatusError,
+    StatusCompleted,
     RoleUser,
     RoleAssistant,
     RoleSystem,
@@ -90,6 +91,16 @@ pub enum Key {
     RenameHint,
     Host,
     LoadEarlier,
+    Subagents,
+    OpenAside,
+    ListView,
+    GraphView,
+    LoadChildren,
+    SubagentEmpty,
+    SubagentReadOnlyOneShot,
+    SubagentReadOnlyUnknown,
+    SubagentReadOnlyExternal,
+    SubagentParentUnavailable,
 }
 
 /// 取文案。
@@ -133,6 +144,7 @@ fn zh(key: Key) -> &'static str {
         Key::StatusRunning => "运行中",
         Key::StatusWaiting => "待确认",
         Key::StatusError => "错误",
+        Key::StatusCompleted => "已完成",
         Key::RoleUser => "你",
         Key::RoleAssistant => "助手",
         Key::RoleSystem => "系统",
@@ -146,6 +158,16 @@ fn zh(key: Key) -> &'static str {
         Key::RenameHint => "点击重命名",
         Key::Host => "Host",
         Key::LoadEarlier => "加载更早的消息",
+        Key::Subagents => "子 Agent",
+        Key::OpenAside => "在右栏打开",
+        Key::ListView => "列表",
+        Key::GraphView => "关系图",
+        Key::LoadChildren => "加载子级",
+        Key::SubagentEmpty => "没有子 Agent。",
+        Key::SubagentReadOnlyOneShot => "一次性子 Agent：仅可查看历史，不支持续聊。",
+        Key::SubagentReadOnlyUnknown => "未知模式的子会话：仅可查看历史。",
+        Key::SubagentReadOnlyExternal => "外部任务：没有本地会话，无法续聊。",
+        Key::SubagentParentUnavailable => "父会话不可用，暂时无法续聊。",
     }
 }
 
@@ -182,6 +204,7 @@ fn en(key: Key) -> &'static str {
         Key::StatusRunning => "Running",
         Key::StatusWaiting => "Waiting",
         Key::StatusError => "Error",
+        Key::StatusCompleted => "Completed",
         Key::RoleUser => "You",
         Key::RoleAssistant => "Assistant",
         Key::RoleSystem => "System",
@@ -195,6 +218,18 @@ fn en(key: Key) -> &'static str {
         Key::RenameHint => "Click to rename",
         Key::Host => "Host",
         Key::LoadEarlier => "Load earlier messages",
+        Key::Subagents => "Subagents",
+        Key::OpenAside => "Open in sidebar",
+        Key::ListView => "List",
+        Key::GraphView => "Graph",
+        Key::LoadChildren => "Load children",
+        Key::SubagentEmpty => "No subagents.",
+        Key::SubagentReadOnlyOneShot => "One-shot subagent: transcript only, no continuation.",
+        Key::SubagentReadOnlyUnknown => "Unknown subagent mode: transcript only.",
+        Key::SubagentReadOnlyExternal => "External task: no local session to continue.",
+        Key::SubagentParentUnavailable => {
+            "The parent session is unavailable; continuation is disabled."
+        }
     }
 }
 
@@ -239,6 +274,15 @@ pub fn role_key(role: Role) -> Key {
         Role::Assistant => Key::RoleAssistant,
         Role::System => Key::RoleSystem,
         Role::Tool => Key::RoleTool,
+    }
+}
+
+/// 子 Agent 状态 → 文案键。
+pub fn subagent_state_key(state: crate::model::SubagentState) -> Key {
+    match state {
+        crate::model::SubagentState::Running => Key::StatusRunning,
+        crate::model::SubagentState::Completed => Key::StatusCompleted,
+        crate::model::SubagentState::Idle => Key::StatusIdle,
     }
 }
 

@@ -1,5 +1,7 @@
 //! 会话页：标题栏 + 消息流（对话 / 轨迹）+ 输入区。
 
+use std::collections::HashMap;
+
 use dioxus::prelude::*;
 
 use crate::i18n::{self, Key, use_t};
@@ -7,8 +9,9 @@ use crate::icons::Icon;
 use crate::markdown::MarkdownView;
 use crate::model::{
     ApprovalItem, ConnectionState, MessageRow, QuestionCard, QueueItem, Role, SendMode,
-    TrajectoryRow,
+    SubagentMode, SubagentRow, TrajectoryRow,
 };
+use crate::subagent::SubagentCatalog;
 use crate::tool_card::ToolCard;
 
 /// 单次渲染上限：超过后只渲染尾部，避免一次挂载几千个节点。
@@ -47,6 +50,30 @@ pub fn ConversationView(
     on_send: EventHandler<String>,
     on_toggle_right: EventHandler<()>,
     #[props(default = String::from("对话"))] title: String,
+    /// 当前会话是否是子会话。
+    #[props(default = false)]
+    is_subagent: bool,
+    /// 子会话的可继续性；普通会话为 `None`。
+    #[props(default = None)]
+    subagent_mode: Option<SubagentMode>,
+    /// 父会话是否可用（决定 continuable 子会话能否续聊）。
+    #[props(default = true)]
+    parent_available: bool,
+    /// 祖先面包屑 `(session_id, title)`。
+    #[props(default = Vec::new())]
+    lineage: Vec<(String, String)>,
+    #[props(default = EventHandler::new(|_| {}))] on_navigate: EventHandler<String>,
+    /// 当前父会话的直接子 Agent 目录。
+    #[props(default = Vec::new())]
+    subagent_rows: Vec<SubagentRow>,
+    /// 已按需加载的嵌套目录（parent id → children）。
+    #[props(default = HashMap::new())]
+    subagent_tree: HashMap<String, Vec<SubagentRow>>,
+    #[props(default = Vec::new())] subagent_expanded: Vec<String>,
+    #[props(default = EventHandler::new(|_| {}))] on_subagent_toggle: EventHandler<String>,
+    #[props(default = EventHandler::new(|_| {}))] on_subagent_open: EventHandler<SubagentRow>,
+    #[props(default = EventHandler::new(|_| {}))] on_subagent_aside: EventHandler<SubagentRow>,
+    #[props(default = EventHandler::new(|_| {}))] on_subagent_refresh: EventHandler<()>,
 ) -> Element {
     let t = use_t();
     let mut draft = use_signal(String::new);
@@ -75,11 +102,45 @@ pub fn ConversationView(
 
     let can_send = connection == ConnectionState::Connected;
     let truncated = messages.len().saturating_sub(MAX_RENDER);
+    // 子会话的只读判定：one-shot / unknown / external 一律只读；
+    // continuable 在父会话不可用时也只读，但仍在运行时保留独立停止。
+    let catalog_root_label = title.clone();
+
+    let read_only_reason = match subagent_mode {
+        Some(SubagentMode::Continuable) if !parent_available => {
+            Some(Key::SubagentParentUnavailable)
+        }
+        Some(SubagentMode::OneShot) => Some(Key::SubagentReadOnlyOneShot),
+        Some(SubagentMode::External) => Some(Key::SubagentReadOnlyExternal),
+        Some(SubagentMode::Unknown) => Some(Key::SubagentReadOnlyUnknown),
+        _ => None,
+    };
 
     rsx! {
         section { class: "conversation",
             header { class: "conversation__head",
-                if renaming() {
+                if !lineage.is_empty() {
+                    nav { class: "breadcrumb",
+                        for (id, label) in lineage.iter() {
+                            {
+                                let target = id.clone();
+                                rsx! {
+                                    button {
+                                        key: "{id}",
+                                        class: "breadcrumb__item",
+                                        title: "{label}",
+                                        onclick: move |_| on_navigate.call(target.clone()),
+                                        "{label}"
+                                    }
+                                    span { class: "breadcrumb__sep", "/" }
+                                }
+                            }
+                        }
+                    }
+                }
+                if is_subagent {
+                    span { class: "conversation__title", "{title}" }
+                } else if renaming() {
                     input {
                         class: "title-input",
                         value: "{title_draft}",
@@ -119,6 +180,16 @@ pub fn ConversationView(
                         "{t.get(Key::Trajectory)} {trajectory.len()}"
                     }
                 }
+                SubagentCatalog {
+                    rows: subagent_rows.clone(),
+                    tree: subagent_tree.clone(),
+                    expanded: subagent_expanded.clone(),
+                    root_label: catalog_root_label.clone(),
+                    on_toggle: on_subagent_toggle,
+                    on_open: on_subagent_open,
+                    on_open_aside: on_subagent_aside,
+                    on_refresh: on_subagent_refresh,
+                }
                 span { class: "spacer" }
                 if let Some((used, window)) = context_usage {
                     {
@@ -132,11 +203,13 @@ pub fn ConversationView(
                         }
                     }
                 }
-                button {
-                    class: "icon-btn",
-                    title: "{t.get(Key::Archive)}",
-                    onclick: move |_| on_archive.call(()),
-                    Icon { glyph: "branch-outline".to_string() }
+                if !is_subagent {
+                    button {
+                        class: "icon-btn",
+                        title: "{t.get(Key::Archive)}",
+                        onclick: move |_| on_archive.call(()),
+                        Icon { glyph: "branch-outline".to_string() }
+                    }
                 }
                 button {
                     class: "icon-btn",
@@ -243,56 +316,67 @@ pub fn ConversationView(
                 QuestionCardView { key: "{card.event_id}", card: card.clone(), on_answer }
             }
 
-            footer { class: "composer",
-                textarea {
-                    class: "composer__input",
-                    rows: "3",
-                    placeholder: if can_send { t.get(Key::ComposerPlaceholder) } else { t.get(Key::ComposerDisabled) },
-                    disabled: !can_send,
-                    value: "{draft}",
-                    oninput: move |evt| draft.set(evt.value()),
-                    onkeydown: move |evt| {
-                        if evt.key().to_string() == "Enter" && !evt.modifiers().shift() {
-                            evt.prevent_default();
-                            let text = draft();
-                            if !text.trim().is_empty() {
-                                on_send.call(text);
-                                draft.set(String::new());
-                            }
-                        }
-                    },
-                }
-                div { class: "composer__side",
-                    div { class: "segmented",
-                        button {
-                            class: "{send_mode.css_class(send_mode == SendMode::Queue)}",
-                            onclick: move |_| on_mode.call(SendMode::Queue),
-                            "{t.get(Key::Queue)}"
-                        }
-                        button {
-                            class: "{send_mode.css_class(send_mode == SendMode::Steer)}",
-                            onclick: move |_| on_mode.call(SendMode::Steer),
-                            "{t.get(Key::Steer)}"
-                        }
-                    }
-                    if running {
+            footer { class: if read_only_reason.is_some() { "composer composer--readonly" } else { "composer" },
+                if let Some(reason) = read_only_reason {
+                    div { class: "composer__notice", "{t.get(reason)}" }
+                    if subagent_mode.map(SubagentMode::is_continuable).unwrap_or(false) && running {
                         button {
                             class: "ghost-btn ghost-btn--danger",
                             onclick: move |_| on_cancel.call(()),
                             "{t.get(Key::Stop)}"
                         }
                     }
-                    button {
-                        class: "primary-btn",
-                        disabled: !can_send || draft().trim().is_empty(),
-                        onclick: move |_| {
-                            let text = draft();
-                            if !text.trim().is_empty() {
-                                on_send.call(text);
-                                draft.set(String::new());
+                } else {
+                    textarea {
+                        class: "composer__input",
+                        rows: "3",
+                        placeholder: if can_send { t.get(Key::ComposerPlaceholder) } else { t.get(Key::ComposerDisabled) },
+                        disabled: !can_send,
+                        value: "{draft}",
+                        oninput: move |evt| draft.set(evt.value()),
+                        onkeydown: move |evt| {
+                            if evt.key().to_string() == "Enter" && !evt.modifiers().shift() {
+                                evt.prevent_default();
+                                let text = draft();
+                                if !text.trim().is_empty() {
+                                    on_send.call(text);
+                                    draft.set(String::new());
+                                }
                             }
                         },
-                        "{t.get(Key::Send)}"
+                    }
+                    div { class: "composer__side",
+                        div { class: "segmented",
+                            button {
+                                class: "{send_mode.css_class(send_mode == SendMode::Queue)}",
+                                onclick: move |_| on_mode.call(SendMode::Queue),
+                                "{t.get(Key::Queue)}"
+                            }
+                            button {
+                                class: "{send_mode.css_class(send_mode == SendMode::Steer)}",
+                                onclick: move |_| on_mode.call(SendMode::Steer),
+                                "{t.get(Key::Steer)}"
+                            }
+                        }
+                        if running {
+                            button {
+                                class: "ghost-btn ghost-btn--danger",
+                                onclick: move |_| on_cancel.call(()),
+                                "{t.get(Key::Stop)}"
+                            }
+                        }
+                        button {
+                            class: "primary-btn",
+                            disabled: !can_send || draft().trim().is_empty(),
+                            onclick: move |_| {
+                                let text = draft();
+                                if !text.trim().is_empty() {
+                                    on_send.call(text);
+                                    draft.set(String::new());
+                                }
+                            },
+                            "{t.get(Key::Send)}"
+                        }
                     }
                 }
             }
