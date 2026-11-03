@@ -636,3 +636,58 @@ mod tests {
         );
     }
 }
+
+/// `session/rename` 请求。上游 `SessionRenameRequest`。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRenameRequest {
+    pub session_id: SessionId,
+    pub title: String,
+}
+
+/// `session/rename` 响应。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRenameValue {
+    pub title: String,
+    pub seq: u64,
+}
+
+/// 一个可选项。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QuestionOption {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// 一个提问。上游 `AskUserQuestionItem`。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuestionItem {
+    pub id: String,
+    pub question: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<QuestionOption>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multi_select: Option<bool>,
+}
+
+/// 单个问题的回答。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QuestionAnswerItem {
+    pub id: String,
+    pub selected: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom: Option<String>,
+}
+
+/// 整批回答。上游 `AskUserQuestionAnswer`。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QuestionAnswer {
+    pub answers: Vec<QuestionAnswerItem>,
+}

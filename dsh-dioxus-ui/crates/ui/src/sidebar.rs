@@ -5,6 +5,7 @@
 
 use dioxus::prelude::*;
 
+use crate::i18n::{Key, use_t};
 use crate::icons::Icon;
 use crate::model::SessionSummary;
 
@@ -14,6 +15,8 @@ pub fn SessionList(
     active_id: Option<String>,
     on_select: EventHandler<String>,
 ) -> Element {
+    let t = use_t();
+
     // 按 workspace 分组，保持首次出现顺序
     let mut groups: Vec<(String, Vec<SessionSummary>)> = Vec::new();
     for session in sessions {
@@ -30,7 +33,7 @@ pub fn SessionList(
         nav { class: "session-list",
             button { class: "primary-btn primary-btn--block",
                 Icon { glyph: "new-chat-outline".to_string() }
-                span { "新建会话" }
+                span { "{t.get(Key::NewSession)}" }
             }
             for (workspace, items) in groups {
                 div { class: "group",

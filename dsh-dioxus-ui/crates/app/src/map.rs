@@ -6,14 +6,18 @@
 
 use dsh_proto::session::{SessionSummary as WireSummary, SessionWireEvent};
 use dsh_state::SessionView;
-use dsh_ui::{ApprovalItem, MessageRow, Role, SessionStatus, SessionSummary, TrajectoryRow};
+use dsh_ui::{
+    ApprovalItem, MessageRow, QuestionCard, QuestionItemView, Role, SessionStatus, SessionSummary,
+    TrajectoryRow,
+};
 use serde_json::Value;
 
 /// 会话摘要 → 列表项。
 pub fn to_summary(wire: &WireSummary) -> SessionSummary {
     // Host 的列表里没有标题（标题来自 projections/rename）；先用短 id 占位，
     // 避免与左侧的「工作区名」重复。
-    let title = format!("会话 {}", short_id(wire.session_id.as_str()));
+    // 标题来自 projections/rename，暂用短 id 占位；不加语言前缀，避免与 i18n 耦合
+    let title = short_id(wire.session_id.as_str());
 
     // M0 只有「运行中/空闲」两态；等待审批需要 api-session/status 事件，M2 接入
     let status = if wire.running {
@@ -169,12 +173,69 @@ fn format_time(ms: u64) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(secs);
+    // 用语言中立的短格式（本地化留给 UI 层）
     let diff = now.saturating_sub(secs);
     match diff {
-        0..=59 => "刚刚".to_string(),
-        60..=3599 => format!("{} 分钟前", diff / 60),
-        3600..=86399 => format!("{} 小时前", diff / 3600),
-        _ => format!("{} 天前", diff / 86400),
+        0..=59 => "now".to_string(),
+        60..=3599 => format!("{}m", diff / 60),
+        3600..=86399 => format!("{}h", diff / 3600),
+        _ => format!("{}d", diff / 86400),
+    }
+}
+
+/// `user-questions/request` waterfall → 提问卡。
+///
+/// 请求形状（上游 `AskUserQuestionRequest`）：`{ callId?, questions: [...] }`，
+/// 每个问题 `{ id, question, detail?, options?: [{label}], multiSelect? }`。
+pub fn question(event_id: String, agent_id: String, request: &Value) -> QuestionCard {
+    let call_id = request
+        .get("callId")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+
+    let items = request
+        .get("questions")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(|item| {
+                    let id = item.get("id").and_then(Value::as_str)?.to_string();
+                    let question = item.get("question").and_then(Value::as_str)?.to_string();
+                    let options = item
+                        .get("options")
+                        .and_then(Value::as_array)
+                        .map(|opts| {
+                            opts.iter()
+                                .filter_map(|opt| {
+                                    opt.get("label").and_then(Value::as_str).map(str::to_string)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    Some(QuestionItemView {
+                        id,
+                        question,
+                        detail: item
+                            .get("detail")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        options,
+                        multi_select: item
+                            .get("multiSelect")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    QuestionCard {
+        event_id,
+        agent_id,
+        call_id,
+        items,
     }
 }
 

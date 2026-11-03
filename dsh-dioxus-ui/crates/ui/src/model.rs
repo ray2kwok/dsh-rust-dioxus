@@ -19,15 +19,6 @@ pub enum SessionStatus {
 }
 
 impl SessionStatus {
-    pub fn label(self) -> &'static str {
-        match self {
-            SessionStatus::Idle => "空闲",
-            SessionStatus::Running => "运行中",
-            SessionStatus::Waiting => "待确认",
-            SessionStatus::Error => "错误",
-        }
-    }
-
     pub fn css_class(self) -> &'static str {
         match self {
             SessionStatus::Idle => "dot dot--idle",
@@ -45,17 +36,6 @@ pub enum Role {
     Assistant,
     System,
     Tool,
-}
-
-impl Role {
-    pub fn label(self) -> &'static str {
-        match self {
-            Role::User => "你",
-            Role::Assistant => "助手",
-            Role::System => "系统",
-            Role::Tool => "工具",
-        }
-    }
 }
 
 /// 一条可渲染的消息。
@@ -99,14 +79,6 @@ pub enum ConnectionState {
 }
 
 impl ConnectionState {
-    pub fn label(self) -> &'static str {
-        match self {
-            ConnectionState::Disconnected => "未连接",
-            ConnectionState::Connecting => "连接中",
-            ConnectionState::Connected => "已连接",
-        }
-    }
-
     pub fn css_class(self) -> &'static str {
         match self {
             ConnectionState::Disconnected => "badge badge--idle",
@@ -133,13 +105,6 @@ pub enum SendMode {
 }
 
 impl SendMode {
-    pub fn label(self) -> &'static str {
-        match self {
-            SendMode::Queue => "排队",
-            SendMode::Steer => "插话",
-        }
-    }
-
     pub fn css_class(self, active: bool) -> &'static str {
         match (self, active) {
             (SendMode::Queue, true) => "seg seg--active",
@@ -199,4 +164,23 @@ pub struct FileEntry {
     pub path: String,
     pub name: String,
     pub is_dir: bool,
+}
+
+/// 一个待回答的问题（来自 `user-questions/request` waterfall）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuestionItemView {
+    pub id: String,
+    pub question: String,
+    pub detail: Option<String>,
+    pub options: Vec<String>,
+    pub multi_select: bool,
+}
+
+/// 一张提问卡（一次 waterfall 可能带多个问题，当前按列表顺序渲染）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuestionCard {
+    pub event_id: String,
+    pub agent_id: String,
+    pub call_id: String,
+    pub items: Vec<QuestionItemView>,
 }

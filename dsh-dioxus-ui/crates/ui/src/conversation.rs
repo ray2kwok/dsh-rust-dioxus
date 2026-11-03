@@ -2,9 +2,12 @@
 
 use dioxus::prelude::*;
 
+use crate::i18n::{self, Key, use_t};
 use crate::icons::Icon;
 use crate::markdown::MarkdownView;
-use crate::model::{ApprovalItem, ConnectionState, MessageRow, Role, SendMode, TrajectoryRow};
+use crate::model::{
+    ApprovalItem, ConnectionState, MessageRow, QuestionCard, Role, SendMode, TrajectoryRow,
+};
 use crate::tool_card::ToolCard;
 
 /// 单次渲染的消息上限。超出后只渲染尾部，保证长会话不卡。
@@ -22,12 +25,21 @@ pub fn ConversationView(
     #[props(default = EventHandler::new(|_| {}))] on_mode: EventHandler<SendMode>,
     #[props(default = EventHandler::new(|_| {}))] on_cancel: EventHandler<()>,
     #[props(default = EventHandler::new(|_| {}))] on_decide: EventHandler<(String, bool)>,
+    #[props(default = Vec::new())] questions: Vec<QuestionCard>,
+    /// (event_id, selected labels, custom text)
+    #[props(default = EventHandler::new(|_| {}))]
+    on_answer: EventHandler<(String, Vec<String>, String)>,
+    #[props(default = EventHandler::new(|_| {}))] on_rename: EventHandler<String>,
+    #[props(default = EventHandler::new(|_| {}))] on_archive: EventHandler<()>,
     on_send: EventHandler<String>,
     on_toggle_right: EventHandler<()>,
     #[props(default = String::from("对话"))] title: String,
 ) -> Element {
+    let t = use_t();
     let mut draft = use_signal(String::new);
     let mut tab = use_signal(|| 0u8);
+    let mut renaming = use_signal(|| false);
+    let mut title_draft = use_signal(String::new);
 
     let message_count = messages.len();
     use_effect(move || {
@@ -41,8 +53,8 @@ pub fn ConversationView(
         return rsx! {
             section { class: "conversation conversation--empty",
                 div { class: "empty",
-                    h2 { "选择或新建一个会话" }
-                    p { class: "muted", "左侧列表来自 Host 的 session/list。" }
+                    h2 { "{t.get(Key::SelectSession)}" }
+                    p { class: "muted", "{t.get(Key::SelectSessionHint)}" }
                 }
             }
         };
@@ -54,20 +66,53 @@ pub fn ConversationView(
     rsx! {
         section { class: "conversation",
             header { class: "conversation__head",
-                span { class: "conversation__title", "{title}" }
+                if renaming() {
+                    input {
+                        class: "title-input",
+                        value: "{title_draft}",
+                        oninput: move |evt| title_draft.set(evt.value()),
+                        onkeydown: move |evt| match evt.key().to_string().as_str() {
+                            "Enter" => {
+                                let value = title_draft();
+                                if !value.trim().is_empty() {
+                                    on_rename.call(value);
+                                }
+                                renaming.set(false);
+                            }
+                            "Escape" => renaming.set(false),
+                            _ => {}
+                        },
+                    }
+                } else {
+                    button {
+                        class: "conversation__title",
+                        title: "{t.get(Key::RenameHint)}",
+                        onclick: move |_| {
+                            title_draft.set(title.clone());
+                            renaming.set(true);
+                        },
+                        "{title}"
+                    }
+                }
                 div { class: "tabs",
                     button {
                         class: if tab() == 0 { "tab tab--active" } else { "tab" },
                         onclick: move |_| tab.set(0),
-                        "对话"
+                        "{t.get(Key::Chat)}"
                     }
                     button {
                         class: if tab() == 1 { "tab tab--active" } else { "tab" },
                         onclick: move |_| tab.set(1),
-                        "轨迹 {trajectory.len()}"
+                        "{t.get(Key::Trajectory)} {trajectory.len()}"
                     }
                 }
                 span { class: "spacer" }
+                button {
+                    class: "icon-btn",
+                    title: "{t.get(Key::Archive)}",
+                    onclick: move |_| on_archive.call(()),
+                    Icon { glyph: "branch-outline".to_string() }
+                }
                 button {
                     class: "icon-btn",
                     title: "右栏",
@@ -79,7 +124,7 @@ pub fn ConversationView(
             if tab() == 0 {
                 div { class: "messages",
                     if messages.is_empty() {
-                        div { class: "empty muted", "还没有消息。发一条试试。" }
+                        div { class: "empty muted", "{t.get(Key::NoMessages)}" }
                     }
                     if truncated > 0 {
                         div { class: "muted truncation-hint",
@@ -93,7 +138,7 @@ pub fn ConversationView(
             } else {
                 div { class: "messages trajectory",
                     if trajectory.is_empty() {
-                        div { class: "empty muted", "暂无事件。" }
+                        div { class: "empty muted", "{t.get(Key::Trajectory)} · 0" }
                     }
                     for row in trajectory.iter() {
                         div { key: "{row.seq}", class: "traj-row",
@@ -114,7 +159,7 @@ pub fn ConversationView(
                             rsx! {
                                 div { key: "{item.event_id}", class: "approval-card",
                                     div { class: "approval-card__head",
-                                        span { class: "chip chip--approval", "需要确认" }
+                                        span { class: "chip chip--approval", "{t.get(Key::NeedsConfirm)}" }
                                         span { class: "approval-card__title", "{item.title}" }
                                         span { class: "muted", "{item.agent_id}" }
                                     }
@@ -123,12 +168,12 @@ pub fn ConversationView(
                                         button {
                                             class: "primary-btn",
                                             onclick: move |_| on_decide.call((allow_id.clone(), true)),
-                                            "允许一次"
+                                            "{t.get(Key::AllowOnce)}"
                                         }
                                         button {
                                             class: "ghost-btn",
                                             onclick: move |_| on_decide.call((deny_id.clone(), false)),
-                                            "拒绝"
+                                            "{t.get(Key::Reject)}"
                                         }
                                     }
                                 }
@@ -138,11 +183,15 @@ pub fn ConversationView(
                 }
             }
 
+            for card in questions.iter() {
+                QuestionCardView { key: "{card.event_id}", card: card.clone(), on_answer }
+            }
+
             footer { class: "composer",
                 textarea {
                     class: "composer__input",
                     rows: "3",
-                    placeholder: if can_send { "输入消息，Enter 发送 / Shift+Enter 换行" } else { "未连接，暂不可发送" },
+                    placeholder: if can_send { t.get(Key::ComposerPlaceholder) } else { t.get(Key::ComposerDisabled) },
                     disabled: !can_send,
                     value: "{draft}",
                     oninput: move |evt| draft.set(evt.value()),
@@ -162,19 +211,19 @@ pub fn ConversationView(
                         button {
                             class: "{send_mode.css_class(send_mode == SendMode::Queue)}",
                             onclick: move |_| on_mode.call(SendMode::Queue),
-                            "{SendMode::Queue.label()}"
+                            "{t.get(Key::Queue)}"
                         }
                         button {
                             class: "{send_mode.css_class(send_mode == SendMode::Steer)}",
                             onclick: move |_| on_mode.call(SendMode::Steer),
-                            "{SendMode::Steer.label()}"
+                            "{t.get(Key::Steer)}"
                         }
                     }
                     if running {
                         button {
                             class: "ghost-btn ghost-btn--danger",
                             onclick: move |_| on_cancel.call(()),
-                            "停止"
+                            "{t.get(Key::Stop)}"
                         }
                     }
                     button {
@@ -187,7 +236,7 @@ pub fn ConversationView(
                                 draft.set(String::new());
                             }
                         },
-                        "发送"
+                        "{t.get(Key::Send)}"
                     }
                 }
             }
@@ -197,6 +246,9 @@ pub fn ConversationView(
 
 #[component]
 fn MessageItem(message: MessageRow) -> Element {
+    let t = use_t();
+    let role_label = t.get(i18n::role_key(message.role));
+
     rsx! {
         article { class: match message.role {
             Role::User => "msg msg--user",
@@ -205,7 +257,7 @@ fn MessageItem(message: MessageRow) -> Element {
             Role::Tool => "msg msg--tool",
         },
             div { class: "msg__head",
-                span { class: "msg__role", "{message.role.label()}" }
+                span { class: "msg__role", "{role_label}" }
                 if message.streaming {
                     span { class: "chip chip--live", "流式中" }
                 }
@@ -220,6 +272,89 @@ fn MessageItem(message: MessageRow) -> Element {
                     MarkdownView { source: message.text.clone() }
                     if message.streaming {
                         span { class: "caret" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 提问卡：选项 + 可选的自定义回答。
+#[component]
+fn QuestionCardView(
+    card: QuestionCard,
+    on_answer: EventHandler<(String, Vec<String>, String)>,
+) -> Element {
+    let t = use_t();
+    let mut selected = use_signal(Vec::<String>::new);
+    let mut custom = use_signal(String::new);
+    let first = card.items.first().cloned();
+    let multi = first
+        .as_ref()
+        .map(|item| item.multi_select)
+        .unwrap_or(false);
+
+    rsx! {
+        div { class: "approval-bar",
+            div { class: "question-card",
+                div { class: "approval-card__head",
+                    span { class: "chip chip--question", "{t.get(Key::NeedsAnswer)}" }
+                    span { class: "approval-card__title",
+                        {first.as_ref().map(|item| item.question.clone()).unwrap_or_else(|| "请确认".to_string())}
+                    }
+                }
+                if let Some(detail) = first.as_ref().and_then(|item| item.detail.clone()) {
+                    pre { class: "approval-card__detail", "{detail}" }
+                }
+                if let Some(item) = first.clone() {
+                    div { class: "question-options",
+                        for option in item.options.iter() {
+                            {
+                                let label = option.clone();
+                                let active = selected.read().contains(&label);
+                                let pick = label.clone();
+                                rsx! {
+                                    button {
+                                        key: "{label}",
+                                        class: if active { "option option--active" } else { "option" },
+                                        onclick: move |_| {
+                                            let mut list = selected.write();
+                                            if multi {
+                                                if let Some(pos) = list.iter().position(|v| v == &pick) {
+                                                    list.remove(pos);
+                                                } else {
+                                                    list.push(pick.clone());
+                                                }
+                                            } else {
+                                                list.clear();
+                                                list.push(pick.clone());
+                                            }
+                                        },
+                                        "{label}"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    input {
+                        class: "question-custom",
+                        placeholder: "{t.get(Key::OtherPlaceholder)}",
+                        value: "{custom}",
+                        oninput: move |evt| custom.set(evt.value()),
+                    }
+                }
+                div { class: "approval-card__actions",
+                    button {
+                        class: "primary-btn",
+                        onclick: {
+                            let event_id = card.event_id.clone();
+                            move |_| on_answer.call((
+                                event_id.clone(),
+                                selected.read().clone(),
+                                custom.read().clone(),
+                            ))
+                        },
+                        "{t.get(Key::SubmitAnswer)}"
                     }
                 }
             }

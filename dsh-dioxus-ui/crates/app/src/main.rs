@@ -19,8 +19,8 @@ use dsh_runtime::DshClient;
 use dsh_state::SessionView;
 use dsh_transport::{Backoff, StreamEvent};
 use dsh_ui::{
-    AppShell, ApprovalItem, ConnectionState, FileEntry, MessageRow, SendMode, SessionSummary,
-    Theme, TrajectoryRow,
+    AppShell, ApprovalItem, ConnectionState, FileEntry, MessageRow, QuestionCard, SendMode,
+    SessionSummary, Theme, TrajectoryRow,
 };
 use tokio::sync::mpsc;
 
@@ -76,10 +76,12 @@ struct Ui {
     generation: Signal<u64>,
     client: Signal<Option<Arc<DshClient>>>,
     approvals: Signal<Vec<ApprovalItem>>,
+    questions: Signal<Vec<QuestionCard>>,
     client_id: Signal<Option<String>>,
     running: Signal<bool>,
     send_mode: Signal<SendMode>,
     theme: Signal<Theme>,
+    locale: Signal<dsh_ui::Locale>,
     /// 手动重连触发器（监督循环里 select）。
     force_reconnect: Signal<Option<mpsc::UnboundedSender<()>>>,
 }
@@ -89,6 +91,13 @@ fn App() -> Element {
     let (force_tx, force_rx) = mpsc::unbounded_channel::<()>();
     // use_future 的闭包是 FnMut，Receiver 不能直接 move 进去：放进 Mutex 后取一次
     let force_rx = Arc::new(std::sync::Mutex::new(Some(force_rx)));
+
+    // 语言信号既进 Ui，也通过 context 下发给组件（组件用 use_t() 读）
+    let locale_signal = use_signal(|| match std::env::var("DSH_LOCALE").as_deref() {
+        Ok("en") => dsh_ui::Locale::En,
+        _ => dsh_ui::Locale::Zh,
+    });
+    use_context_provider(|| locale_signal);
 
     let mut ui = Ui {
         connection: use_signal(|| ConnectionState::Connecting),
@@ -103,10 +112,12 @@ fn App() -> Element {
         generation: use_signal(|| 0u64),
         client: use_signal(|| None::<Arc<DshClient>>),
         approvals: use_signal(Vec::<ApprovalItem>::new),
+        questions: use_signal(Vec::<QuestionCard>::new),
         client_id: use_signal(|| None::<String>),
         running: use_signal(|| false),
         send_mode: use_signal(|| SendMode::Queue),
         theme: use_signal(|| Theme::System),
+        locale: locale_signal,
         force_reconnect: use_signal(|| Some(force_tx)),
     };
 
@@ -153,6 +164,7 @@ document.documentElement.style.colorScheme = dark ? 'dark' : 'light';"#
                         }
 
                         ui.approvals.set(Vec::new());
+                        ui.questions.set(Vec::new());
                         ui.client_id.set(None);
                         ui.client.set(None);
                         ui.connection.set(ConnectionState::Disconnected);
@@ -223,6 +235,89 @@ document.documentElement.style.colorScheme = dark ? 'dark' : 'light';"#
         });
     };
 
+    let on_answer = move |(event_id, selected, custom): (String, Vec<String>, String)| {
+        let card = ui
+            .questions
+            .read()
+            .iter()
+            .find(|card| card.event_id == event_id)
+            .cloned();
+        ui.questions.write().retain(|c| c.event_id != event_id);
+
+        let (Some(card), Some(handle)) = (card, ui.client.read().clone()) else {
+            return;
+        };
+
+        let mut answers = Vec::new();
+        for item in &card.items {
+            answers.push(serde_json::json!({
+                "id": item.id,
+                "selected": if selected.is_empty() { Vec::<String>::new() } else { selected.clone() },
+                "custom": if custom.trim().is_empty() { serde_json::Value::Null } else { serde_json::Value::String(custom.clone()) },
+            }));
+        }
+        // null 字段直接去掉更贴近上游（custom 可选）
+        for answer in &mut answers {
+            if let Some(obj) = answer.as_object_mut()
+                && obj.get("custom").map(|v| v.is_null()).unwrap_or(false)
+            {
+                obj.remove("custom");
+            }
+        }
+        let payload = serde_json::json!({ "answers": answers });
+
+        let agent_id = card.agent_id.clone();
+        let call_id = card.call_id.clone();
+        spawn(async move {
+            if let Err(err) = handle.answer_question(agent_id, call_id, payload).await {
+                tracing::warn!(%err, "回答提交失败");
+            }
+        });
+    };
+
+    let on_rename = move |title: String| {
+        let Some(handle) = ui.client.read().clone() else {
+            return;
+        };
+        let Some(session_id) = (ui.active)() else {
+            return;
+        };
+        ui.active_title.set(title.clone());
+        spawn(async move {
+            if let Err(err) = handle
+                .rename_session(session_id.clone(), title.clone())
+                .await
+            {
+                tracing::warn!(%err, "重命名失败");
+                return;
+            }
+            if let Ok(list) = handle.list_sessions().await {
+                ui.sessions.set(list.iter().map(map::to_summary).collect());
+            }
+        });
+    };
+
+    let on_archive = move |_| {
+        let Some(handle) = ui.client.read().clone() else {
+            return;
+        };
+        let Some(session_id) = (ui.active)() else {
+            return;
+        };
+        ui.active.set(None);
+        ui.messages.set(Vec::new());
+        ui.trajectory.set(Vec::new());
+        spawn(async move {
+            if let Err(err) = handle.archive_session(session_id).await {
+                tracing::warn!(%err, "归档失败");
+            }
+            // 以 Host 的列表为准，不做本地乐观删除（归档是否影响 list 尚未确认）
+            if let Ok(list) = handle.list_sessions().await {
+                ui.sessions.set(list.iter().map(map::to_summary).collect());
+            }
+        });
+    };
+
     let on_cancel = move |_| {
         let Some(handle) = ui.client.read().clone() else {
             return;
@@ -239,6 +334,7 @@ document.documentElement.style.colorScheme = dark ? 'dark' : 'light';"#
 
     let on_mode = move |mode: SendMode| ui.send_mode.set(mode);
     let on_theme = move |theme: Theme| ui.theme.set(theme);
+    let on_locale = move |locale: dsh_ui::Locale| ui.locale.set(locale);
     let on_reconnect = move |_| {
         if let Some(tx) = (ui.force_reconnect)() {
             let _ = tx.send(());
@@ -272,6 +368,7 @@ document.documentElement.style.colorScheme = dark ? 'dark' : 'light';"#
             preview: (ui.preview)(),
             connection: (ui.connection)(),
             approvals: (ui.approvals)(),
+            questions: (ui.questions)(),
             running: (ui.running)(),
             send_mode: (ui.send_mode)(),
             theme: (ui.theme)(),
@@ -280,9 +377,13 @@ document.documentElement.style.colorScheme = dark ? 'dark' : 'light';"#
             on_select,
             on_send,
             on_decide,
+            on_answer,
+            on_rename,
+            on_archive,
             on_cancel,
             on_mode,
             on_theme,
+            on_locale,
             on_reconnect,
             on_open_file,
         }
@@ -297,6 +398,7 @@ async fn bootstrap(mut ui: Ui) -> Result<mpsc::Receiver<()>, dsh_transport::Tran
 
     let (disconnect_tx, disconnect_rx) = mpsc::channel::<()>(1);
     let mut approvals = ui.approvals;
+    let mut questions = ui.questions;
 
     if let Ok(mut events) = handle.open_events() {
         if let Some(client_id) = handle.await_ready(&mut events).await {
@@ -324,8 +426,20 @@ async fn bootstrap(mut ui: Ui) -> Result<mpsc::Receiver<()>, dsh_transport::Tran
                                     .write()
                                     .push(map::approval(event_id, agent_id, &request));
                             }
+                            RemoteEventFrame::Waterfall {
+                                event,
+                                event_id,
+                                agent_id,
+                                request,
+                            } if event == "user-questions/request" => {
+                                tracing::info!(%event_id, %agent_id, "收到提问请求");
+                                questions
+                                    .write()
+                                    .push(map::question(event_id, agent_id, &request));
+                            }
                             RemoteEventFrame::Cancel { event_id } => {
                                 approvals.write().retain(|item| item.event_id != event_id);
+                                questions.write().retain(|card| card.event_id != event_id);
                             }
                             _ => {}
                         }
@@ -386,6 +500,22 @@ async fn bootstrap(mut ui: Ui) -> Result<mpsc::Receiver<()>, dsh_transport::Tran
             agent_id: "session-fake".to_string(),
             title: "bash 请求执行".to_string(),
             detail: "{\"tool\":\"bash\",\"input\":{\"cmd\":\"rm -rf ./dist\"}}".to_string(),
+        }]);
+    }
+
+    if std::env::var("DSH_FAKE_QUESTION").is_ok() {
+        tracing::info!("已注入调试提问卡");
+        ui.questions.set(vec![QuestionCard {
+            event_id: "fake-q1".to_string(),
+            agent_id: "session-fake".to_string(),
+            call_id: "call-fake".to_string(),
+            items: vec![dsh_ui::QuestionItemView {
+                id: "q1".to_string(),
+                question: "要用哪种方式迁移样式？".to_string(),
+                detail: Some("上游有 59 个 ui-* 包，逐个迁移还是先做骨架？".to_string()),
+                options: vec!["逐屏深挖".to_string(), "先骨架后细节".to_string()],
+                multi_select: false,
+            }],
         }]);
     }
 

@@ -931,3 +931,86 @@ body[data-ds-dark-theme] .tok--fn {
   display: block;
   opacity: 0.6;
 }
+
+/* ---------------------------------------------------------------- 重命名 / 提问 */
+
+.conversation__title {
+  border: none;
+  background: transparent;
+  color: inherit;
+  padding: 2px 6px;
+  border-radius: var(--dsw-radius-xs);
+  cursor: text;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 550;
+}
+
+.conversation__title:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.title-input {
+  width: 240px;
+  border: 1px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-layer-2);
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  padding: 3px 8px;
+  outline: none;
+}
+
+.question-card {
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-state-business-primary) 40%, var(--dsw-alias-border-l2));
+  border-radius: var(--dsw-radius-md);
+  padding: 10px 14px;
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.chip--question {
+  color: var(--dsw-alias-state-business-primary);
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 12%, transparent);
+  border-color: transparent;
+}
+
+.question-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 8px;
+}
+
+.option {
+  border: 1px solid var(--dsw-alias-border-l3);
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  border-radius: 999px;
+  padding: 5px 14px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.option:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.option--active {
+  border-color: var(--dsw-alias-state-business-primary);
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 12%, transparent);
+  color: var(--dsw-alias-state-business-primary);
+}
+
+.question-custom {
+  width: 100%;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-layer-2);
+  color: inherit;
+  font: inherit;
+  font-size: 12.5px;
+  padding: 7px 10px;
+  outline: none;
+  margin-bottom: 10px;
+}

@@ -14,6 +14,7 @@
 //! - 数据模型用 [`model`] 里的视图类型，不直接依赖 wire 类型。
 
 pub mod conversation;
+pub mod i18n;
 pub mod icons;
 pub mod layout;
 pub mod markdown;
@@ -21,11 +22,12 @@ pub mod model;
 pub mod sidebar;
 pub mod tool_card;
 
+pub use i18n::{Key, Locale, T};
 pub use icons::Icon;
 pub use layout::AppShell;
 pub use markdown::MarkdownView;
 pub use model::{
-    ApprovalItem, ConnectionState, FileEntry, MessageRow, Role, SendMode, SessionStatus,
-    SessionSummary, Theme, TrajectoryRow,
+    ApprovalItem, ConnectionState, FileEntry, MessageRow, QuestionCard, QuestionItemView, Role,
+    SendMode, SessionStatus, SessionSummary, Theme, TrajectoryRow,
 };
 pub use tool_card::ToolCard;

@@ -377,3 +377,55 @@ impl DshClient {
         Ok(value.to_string())
     }
 }
+
+impl DshClient {
+    /// 回答问题（`userQuestions/answer`）。`answer` 是 `AskUserQuestionAnswer` 的 JSON。
+    pub async fn answer_question(
+        &self,
+        agent_id: impl Into<String>,
+        call_id: impl Into<String>,
+        answer: serde_json::Value,
+    ) -> Result<(), TransportError> {
+        self.rpc
+            .call_value(
+                "userQuestions/answer",
+                json!({
+                    "agentId": agent_id.into(),
+                    "callId": call_id.into(),
+                    "answer": answer,
+                }),
+            )
+            .await
+            .map(|_| ())
+    }
+
+    /// 重命名会话。
+    pub async fn rename_session(
+        &self,
+        session_id: impl Into<String>,
+        title: impl Into<String>,
+    ) -> Result<(), TransportError> {
+        let request = serde_json::json!({
+            "request": { "sessionId": session_id.into(), "title": title.into() }
+        });
+        self.rpc
+            .call_value(session_ep::RENAME, request)
+            .await
+            .map(|_| ())
+    }
+
+    /// 归档会话。
+    ///
+    /// 上游 `workspace/archiveSession` 的 `args` 尚未实测，这里按
+    /// `{ "request": { "sessionId": … } }` 发送；失败时由调用方提示。
+    pub async fn archive_session(
+        &self,
+        session_id: impl Into<String>,
+    ) -> Result<(), TransportError> {
+        let request = serde_json::json!({ "request": { "sessionId": session_id.into() } });
+        self.rpc
+            .call_value("workspace/archiveSession", request)
+            .await
+            .map(|_| ())
+    }
+}

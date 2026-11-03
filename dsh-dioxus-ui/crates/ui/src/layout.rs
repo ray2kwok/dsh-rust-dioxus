@@ -3,10 +3,11 @@
 use dioxus::prelude::*;
 
 use crate::conversation::ConversationView;
+use crate::i18n::{self, Key, Locale, use_t};
 use crate::icons::Icon;
 use crate::model::{
-    ApprovalItem, ConnectionState, FileEntry, MessageRow, SendMode, SessionSummary, Theme,
-    TrajectoryRow,
+    ApprovalItem, ConnectionState, FileEntry, MessageRow, QuestionCard, SendMode, SessionSummary,
+    Theme, TrajectoryRow,
 };
 use crate::sidebar::SessionList;
 
@@ -27,6 +28,15 @@ pub fn AppShell(
     #[props(default = SendMode::Queue)] send_mode: SendMode,
     #[props(default = Theme::System)] theme: Theme,
     #[props(default = EventHandler::new(|_| {}))] on_theme: EventHandler<Theme>,
+    #[props(default = EventHandler::new(|_| {}))] on_locale: EventHandler<Locale>,
+    #[props(default = Vec::new())] questions: Vec<QuestionCard>,
+    #[props(default = EventHandler::new(|_| {}))] on_answer: EventHandler<(
+        String,
+        Vec<String>,
+        String,
+    )>,
+    #[props(default = EventHandler::new(|_| {}))] on_rename: EventHandler<String>,
+    #[props(default = EventHandler::new(|_| {}))] on_archive: EventHandler<()>,
     #[props(default = EventHandler::new(|_| {}))] on_decide: EventHandler<(String, bool)>,
     #[props(default = EventHandler::new(|_| {}))] on_mode: EventHandler<SendMode>,
     #[props(default = EventHandler::new(|_| {}))] on_cancel: EventHandler<()>,
@@ -35,6 +45,7 @@ pub fn AppShell(
     on_select: EventHandler<String>,
     on_send: EventHandler<String>,
 ) -> Element {
+    let t = use_t();
     let mut collapsed = use_signal(|| false);
     let mut show_right = use_signal(|| false);
     let mut show_settings = use_signal(|| false);
@@ -73,6 +84,10 @@ pub fn AppShell(
                     messages,
                     connection,
                     approvals,
+                    questions,
+                    on_answer,
+                    on_rename,
+                    on_archive,
                     trajectory,
                     running,
                     send_mode,
@@ -87,7 +102,7 @@ pub fn AppShell(
             if show_right() {
                 aside { class: "rightbar",
                     div { class: "rightbar__head",
-                        span { "文件" }
+                        span { "{t.get(Key::Files)}" }
                         span { class: "spacer" }
                         button {
                             class: "icon-btn",
@@ -97,7 +112,7 @@ pub fn AppShell(
                     }
                     div { class: "rightbar__body",
                         if files.is_empty() {
-                            div { class: "muted", "目录为空或尚未加载。" }
+                            div { class: "muted", "{t.get(Key::FilesEmpty)}" }
                         }
                         for entry in files.iter() {
                             {
@@ -121,7 +136,7 @@ pub fn AppShell(
                         }
                         if let Some(text) = preview.clone() {
                             div { class: "preview",
-                                div { class: "preview__head muted", "预览" }
+                                div { class: "preview__head muted", "{t.get(Key::Preview)}" }
                                 pre { class: "preview__body", "{text}" }
                             }
                         }
@@ -133,9 +148,9 @@ pub fn AppShell(
         if show_settings() {
             div { class: "modal-backdrop", onclick: move |_| show_settings.set(false),
                 div { class: "modal", onclick: move |evt| evt.stop_propagation(),
-                    h3 { class: "modal__title", "设置" }
+                    h3 { class: "modal__title", "{t.get(Key::Settings)}" }
                     div { class: "modal__row",
-                        span { class: "modal__label", "主题" }
+                        span { class: "modal__label", "{t.get(Key::Theme)}" }
                         button {
                             class: "ghost-btn",
                             onclick: move |_| on_theme.call(theme.next()),
@@ -143,27 +158,35 @@ pub fn AppShell(
                         }
                     }
                     div { class: "modal__row",
-                        span { class: "modal__label", "Host" }
+                        span { class: "modal__label", "{t.get(Key::Language)}" }
+                        button {
+                            class: "ghost-btn",
+                            onclick: move |_| on_locale.call(if t.locale() == Locale::Zh { Locale::En } else { Locale::Zh }),
+                            "{t.locale().label()}"
+                        }
+                    }
+                    div { class: "modal__row",
+                        span { class: "modal__label", "{t.get(Key::Host)}" }
                         span { class: "muted mono", "{host_label}" }
                     }
                     div { class: "modal__row",
-                        span { class: "modal__label", "连接代次" }
+                        span { class: "modal__label", "{t.get(Key::Generation)}" }
                         span { class: "muted", "{generation}" }
                     }
                     div { class: "modal__row",
-                        span { class: "modal__label", "会话数" }
+                        span { class: "modal__label", "{t.get(Key::SessionCount)}" }
                         span { class: "muted", "{sessions.len()}" }
                     }
                     div { class: "modal__actions",
                         button {
                             class: "ghost-btn",
                             onclick: move |_| on_reconnect.call(()),
-                            "重新连接"
+                            "{t.get(Key::Reconnect)}"
                         }
                         button {
                             class: "primary-btn",
                             onclick: move |_| show_settings.set(false),
-                            "关闭"
+                            "{t.get(Key::Close)}"
                         }
                     }
                 }
@@ -171,13 +194,13 @@ pub fn AppShell(
         }
 
         footer { class: "statusbar",
-            span { class: "{connection.css_class()}", "{connection.label()}" }
+            span { class: "{connection.css_class()}", "{t.get(i18n::connection_key(connection))}" }
             span { class: "muted", "{host_label}" }
             span { class: "spacer" }
             span { class: "muted", "generation #{generation}" }
             button {
                 class: "icon-btn",
-                title: "设置",
+                title: "{t.get(Key::Settings)}",
                 onclick: move |_| show_settings.set(true),
                 Icon { glyph: "settings-outline".to_string() }
             }

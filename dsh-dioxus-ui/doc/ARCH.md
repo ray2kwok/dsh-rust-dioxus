@@ -511,10 +511,14 @@ pub fn apply_theme(theme: Theme) {   // 对应上游 theme-presenter.ts
 
 ## 13. i18n
 
-- 字典：从上游 `packages/client/*/src/client/locales.ts` 机械抽取为 `assets/locales/{locale}.json`，`include_str!` 编译进二进制（无运行时文件读取、无网络）。
-- 运行时：`Signal<Locale>` + `t!(ns, key, args…)`；缺键回落 `en` → 键名（debug 下 warn）。
-- 范围：本期 zh/en；其余语言只需补 JSON。
-- 持久化：写入 Host `settings`（namespace `locale`，字段 `preference`），与上游一致。
+- **已实现**：`dsh-ui/src/i18n.rs` —— `Locale{Zh,En}` + `Key` 枚举 + `match` 字典。
+  键是枚举而非字符串，拼错直接编译失败；字典零分配、零依赖。
+- 下发方式：App 根部 `use_context_provider(|| Signal<Locale>)`，组件用 `use_t()` 读取；
+  切换语言触发重渲，无需重启。
+- 数据层不写死语言：`map.rs` 的时间戳用 `now/3m/2h/3d` 这类中立格式，
+  标题用短 id（真正的标题来自 projections/rename）。
+- 待办：从上游 `locales.ts` 抽取完整字典（当前只覆盖界面 chrome），
+  以及把语言选择写进 Host `settings`（namespace `locale` / 字段 `preference`）。
 
 ---
 
@@ -682,7 +686,8 @@ dx build --platform desktop --release
 > | M2 交互 | ◐ | 审批闭环 + `$events/result` 已通（含幂等实测）；`steer` 模式已通；**待做**：ask-question、队列管理 |
 > | M3 可用 | ◐ | 三栏 + 主题切换 + 设置面板 + 轨迹视图；视觉对齐上游 token（配色/圆角/字体/滚动条）；
 > 图标已改用上游 `artwork.ts` 的真实 SVG 几何（内联，无 sprite）；
-> **待做**：i18n（当前仅中文）、会话重命名/归档 |
+> 会话重命名/归档、ask-question（选项 + 自定义回答）、i18n（zh/en，键为枚举）已接通；
+> **待做**：队列管理（`session/updateQueue` 的 action 枚举未确认） |
 > | M4 完整 | ◐ | 右栏文件树 + 文本预览可用；**待做**：Trajectory 的用量/耗时聚合、附件与 @ 引用 |
 > | M5 打磨 | ◐ | 消息渲染窗口化（最近 300 条）+ release 4.7MB + 冒烟脚本；**待做**：真虚拟列表、内存曲线 |
 >
