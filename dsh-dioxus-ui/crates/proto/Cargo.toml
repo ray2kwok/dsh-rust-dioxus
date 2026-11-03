@@ -1,0 +1,13 @@
+[package]
+name = "dsh-proto"
+description = "deepseek-harness 的 wire 协议类型（纯数据，无 IO）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

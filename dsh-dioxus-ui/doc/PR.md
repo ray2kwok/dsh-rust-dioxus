@@ -275,8 +275,8 @@ Host 权威状态 → Remote（HTTP unary / WS stream）→ Client model（React
 | 网络位置 | 桌面形态的网络请求由 Rust 原生侧发起（不经 WebView），因此不受 Origin 同源限制、也无需内嵌代理；浏览器形态才需要与 Host 同源 |
 | 运行环境 | 桌面形态依赖系统 WebView（Linux WebKitGTK / macOS WKWebView / Windows WebView2）与图形环境；无显示环境不可运行 |
 | 生命周期 | 应用需负责 Host 的发现与生命周期（复用已有实例或拉起 `dsh web`），用户不应手动处理端口与 token |
-| 框架 | Dioxus `0.8.0-alpha.3`（alpha），要求 Rust ≥ 1.85 且 edition 2024 |
-| 工具链 | 桌面目标需系统 WebView 开发库 + `dx` CLI；浏览器形态另需 `wasm32-unknown-unknown`。当前机器默认 rustc 1.67 过旧，需切换/升级 |
+| 框架 | Dioxus `0.8.0-alpha.3`（alpha），框架 MSRV 为 Rust 1.85；实际下限由 `dioxus-cli` 决定：**Rust ≥ 1.93** + edition 2024 |
+| 工具链 | 桌面目标需系统 WebView 开发库（Linux: WebKitGTK 4.1 + libsoup3）+ `dx` CLI；浏览器形态另需 `wasm32-unknown-unknown`。环境一致性用 `scripts/setup-env.sh` 校验 |
 | 无 Node 依赖 | 构建不得引入 Node/pnpm；但**联调**需要 Node ≥ 24.9 + pnpm 11.28.5 跑 Host（或由 GUI 拉起已安装的 `dsh`） |
 | 协议风险 | 上游无 OpenAPI/JSON Schema，`args` 键名来自形参反射，需实测校验（见 §12） |
 
@@ -321,14 +321,24 @@ Host 权威状态 → Remote（HTTP unary / WS stream）→ Client model（React
 
 ---
 
-## 12. 待确认问题（需实测）
+## 12. 协议事实核验
 
-1. `session/list` 的 `args` 键是否真为 `{"_request":{}}`（来自单测调用，需真实 Host 抓包确认）。
-2. 各 endpoint 的 `args` 键集合（`commands/execute`、`workspaceFiles/read`、`terminal/attach`、`fileUploads/upload` 等）——从 `lib/typert.host.js` dump 或抓包。
-3. `permessage-deflate` 协商行为（Host 默认 `deflate`，Rust WS 库是否默认请求、协商是否影响二进制正确性）。
-4. 二进制结果（multipart）在 Rust 端的解析顺序假设（按 part 名而非顺序）。
-5. `terminal` 的 `id` 校验规则（客户端 mint）。
-6. Web profile 下各 namespace 的实际可用方法集（缺失 provider 时的错误形态）。
+**已实测确认**（2026-11-03，`dsh transport/examples/probe.rs` 对源码形态 Host 跑通）：
+
+| # | 结论 | 证据 |
+| --- | --- | --- |
+| 1 | `dsh web --no-open --port 0` 打印 `dsh web: http://127.0.0.1:<port>/?token=<43 字符>` | 解析成功，端口由 OS 分配（如 43621） |
+| 2 | `GET /connect?token=…&interactions=answer` 返回的 cookie **可用于一元 `/api/*`** | `session/list` 调用成功 |
+| 3 | `session/list` 的 `args` **必须是** `{"_request":{}}` | 传 `{"request":{}}` 被 `gateway/arguments-invalid` 拒绝：`missing "_request"; unexpected "request"` |
+| 4 | `$events` 以 `{"args":{}}` 打开，首帧为 `ready`（含 `clientId` 与 `host.home`） | 收到 `clientId=92f9d4bf-… home=/home/raykwok` |
+
+**仍待确认**：
+
+1. 其余 endpoint 的 `args` 键集合（`commands/execute`、`workspaceFiles/read`、`terminal/attach`、`fileUploads/upload`）——按同样方法逐个探测，或 dump `lib/typert.host.js` 的 descriptor。
+2. `permessage-deflate` 协商行为（Host 默认 `deflate`；目前首帧正常，长帧未压测）。
+3. 二进制结果（multipart）在 Rust 端的解析（按 part 名而非顺序）。
+4. `terminal` 的 `id` 校验规则（客户端 mint）。
+5. Web profile 下各 namespace 的实际可用方法集（缺失 provider 时的错误形态）。
 
 ---
 

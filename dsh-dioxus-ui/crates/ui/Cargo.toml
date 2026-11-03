@@ -1,0 +1,11 @@
+[package]
+name = "dsh-ui"
+description = "dsh-dioxus-ui 的组件层（布局、会话、消息、输入区）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+dioxus.workspace = true

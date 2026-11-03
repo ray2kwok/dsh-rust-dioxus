@@ -1,0 +1,17 @@
+[package]
+name = "dsh-app"
+description = "dsh-dioxus-ui 桌面入口"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "dsh-dioxus-ui"
+path = "src/main.rs"
+
+[dependencies]
+dioxus.workspace = true
+dsh-proto = { path = "../proto" }
+dsh-ui = { path = "../ui" }

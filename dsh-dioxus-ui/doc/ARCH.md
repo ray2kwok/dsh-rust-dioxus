@@ -136,7 +136,7 @@
 
 | 领域 | 选择 | 版本 | 说明 |
 | --- | --- | --- | --- |
-| UI | `dioxus`（features `["desktop", "router"]`） | `=0.8.0-alpha.3` | 需 Rust ≥ 1.85、edition 2024；桌面端自带 tokio 多线程 runtime |
+| UI | `dioxus`（features `["desktop", "router"]`） | `=0.8.0-alpha.3` | 需 Rust ≥ 1.93（`dioxus-cli` 的 MSRV，高于框架的 1.85）、edition 2024；桌面端自带 tokio 多线程 runtime |
 | 序列化 | `serde` + `serde_json` | 1.x | Host 全部 JSON（无 msgpack） |
 | HTTP | `reqwest`（`default-features = false`，features `["json"]`，**无 TLS**） | 0.13 | 仅 loopback；省掉 rustls/ring |
 | WebSocket | `tokio-tungstenite`（**无 TLS feature**） | 0.30 | 需要能自定义请求头（Cookie）；`futures-util` 拆流 |
@@ -169,18 +169,18 @@ dsh-dioxus-ui/
 ├── rust-toolchain.toml       # channel = "1.85.0"（或 nightly），无 wasm target 需求
 ├── Dioxus.toml               # default_platform = "desktop"、asset_dir、window 配置
 ├── doc/{PR,ARCH}.md
-├── assets/
-│   ├── styles/               # 复用 --dsw-* token 与组件 CSS
-│   ├── locales/{zh,en}.json  # 从上游 locales.ts 机械转换
-│   └── vendor/katex.{js,css,woff2}  # 数学公式（include_str!/asset!）
 └── crates/
     ├── proto/                # dsh-proto：wire 类型，无 IO
     ├── transport/            # dsh-transport：HTTP/WS/mux/重连/Host 子进程
     ├── state/                # dsh-state：AppState、SessionView、归约、Intent
     ├── render/               # dsh-render：markdown/highlight/diff（纯函数）
-    ├── ui/                   # dsh-ui：组件
-    └── app/                  # dsh-app：bin、路由、窗口、启动
+    ├── ui/                   # dsh-ui：组件（assets/ 在本 crate 内）
+    └── app/                  # dsh-app：bin、路由、窗口、启动（assets/ 在本 crate 内）
 ```
+
+> **资源必须留在各自 crate 目录内**：manganis 的 `asset!` 会拒绝 crate 之外的路径
+> （`Path … is outside of allowed folders`），因此样式/字体/词典按「谁用谁带」放置，
+> 而不是集中在工作区根的 `assets/`。
 
 依赖方向严格单向：`app → ui → state → transport → proto`；`render` 只被 `ui` 依赖。
 
@@ -614,8 +614,12 @@ ws close → ConnectionState::Connecting（状态栏提示，输入框可继续�
 ## 18. 构建与发布
 
 ```bash
-# 一次性环境
-rustup toolchain install 1.85.0          # dioxus 0.8 要求 ≥1.85 / edition 2024
+# 一次性环境（推荐：先用脚本体检，再按提示安装）
+./scripts/setup-env.sh            # 只检查，输出阻塞项与修复命令；可作 CI 门禁
+./scripts/setup-env.sh --install  # 逐条确认后安装（--yes 免确认，--dry-run 只看命令）
+
+# 等价的手工步骤
+rustup toolchain install stable           # 需 >= 1.93（dioxus-cli 的 MSRV）/ edition 2024
 cargo install dioxus-cli --version 0.8.0-alpha.3    # 版本需与 dioxus 对齐
 # Linux 另需系统 WebView 开发库（webkit2gtk-4.1 / libsoup3）
 
@@ -623,6 +627,27 @@ cargo install dioxus-cli --version 0.8.0-alpha.3    # 版本需与 dioxus 对齐
 dx build --platform desktop --release
 # 产物：target/dx/dsh-dioxus-ui/<profile>/desktop/…（目录结构以 dx 实际输出为准）
 ```
+
+### 18.1 本地联调 Host（源码形态）
+
+`deepseek-harness` 直接 `pnpm install` 后并不能跑 `dsh web`，还有两道坎：
+
+1. **Typert 描述符**：`lib/typert.host.js` 是构建产物，缺失时启动报
+   `typert contributor(s) failed to register`。用 `pnpm exec tsx scripts/generate-typert.ts`
+   生成（36 个包 / 约 4 秒），比整仓 `build` 快得多。
+2. **前端 client bundle**：`dsh web` 的 `modules` 插件要求 63 个 `lib/client.js`。
+   Rust 前端不加载它们，用 patch 关闭该行即可跳过整条前端构建链：
+
+   ```yaml
+   # patch.yml
+   - id: modules
+     disabled: true
+   ```
+
+   `--patch` 必须紧跟子命令（`dsh web --patch … --no-open --port 0`），
+   放在 `--port` 之后会被判为 unknown option。
+
+`scripts/dev-host.sh` 把上述步骤封装成一条命令（`DSH_REPO` 可覆盖仓库路径）。
 
 - 资源（CSS/字体/词典）经 `asset!` 内嵌或随包分发，运行时无外部文件依赖。
 - 运行前提：目标机已安装 `dsh`（Node ≥ 24.9）；未安装时走引导页。
@@ -669,9 +694,17 @@ dx build --platform desktop --release
 
 ## 21. 开放问题
 
-1. `session/list` 等 endpoint 的 `args` 键名以实测为准（见 `PR.md` §12）。
-2. `dsh web --port 0` 打印的 URL 是否含真实端口与 token（需实跑确认）。
-3. `/connect?interactions=answer` 拿到的 v2 cookie 是否可用于一元 `/api/*` 调用（设计意图如此，需实测）。
-4. `assistant-stream` 是否可能乱序/缺口（上游有 `index`/`revision`；重连时能否只用 `assistant/message.stream` 重建）。
+**已实测关闭**（2026-11-03，`crates/transport/examples/probe.rs` 对真实 Host）：
+
+- `dsh web --no-open --port 0` 的输出格式与 token 解析 ✅
+- `/connect?interactions=answer` 的 cookie 可用于一元 `/api/*` ✅
+- `session/list` 的 `args` 必须是 `{"_request":{}}` ✅
+- `$events` 首帧 `ready`（含 `clientId`/`host.home`）可解析 ✅
+
+**仍开放**：
+
+1. 其余 endpoint 的 `args` 键集合（`commands/execute`、`workspaceFiles/read`、`terminal/attach`、`fileUploads/upload`），按同一方法逐个探测。
+2. `permessage-deflate` 在长帧上的表现（首帧已验证正常）。
+3. `assistant-stream` 是否可能乱序/缺口（上游有 `index`/`revision`；重连时能否只用 `assistant/message.stream` 重建）。
 5. 上游 `--dsw-*` token 与组件 CSS 是否存在依赖 React 结构的样式（需逐文件迁移验证）。
 6. Linux 上 `dx build --platform desktop` 的打包产物在无 Node 环境的机器上是否只需系统 WebView（需在干净镜像验证）。

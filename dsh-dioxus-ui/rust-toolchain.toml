@@ -1,0 +1,5 @@
+[toolchain]
+# dioxus-cli 0.8.0-alpha.3 的 MSRV 是 1.93（高于框架自身的 1.85），
+# 用 stable 以便在不同机器上拿到 >= 1.93 的工具链。
+channel = "stable"
+components = ["rustfmt", "clippy"]

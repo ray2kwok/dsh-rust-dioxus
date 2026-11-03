@@ -1,0 +1,44 @@
+[workspace]
+resolver = "3"
+members = ["crates/proto", "crates/transport", "crates/state", "crates/ui", "crates/app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+# 协议与序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+
+# 网络：只跑 127.0.0.1，刻意不启用 TLS（见 doc/ARCH.md D11）
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
+tokio = { version = "1", features = [
+    "rt",
+    "rt-multi-thread",
+    "macros",
+    "time",
+    "sync",
+    "io-util",
+    "process",
+    "net",
+] }
+# 只跑 loopback：不启用任何 TLS feature；connect/handshake 是 pure-Rust 的必需项
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+tracing = "0.1"
+
+# UI
+dioxus = { version = "=0.8.0-alpha.3", features = ["desktop", "router"] }
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

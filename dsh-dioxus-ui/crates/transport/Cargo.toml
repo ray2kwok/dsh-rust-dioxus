@@ -1,0 +1,20 @@
+[package]
+name = "dsh-transport"
+description = "与 deepseek-harness Host 的传输层：Host 子进程、一元 RPC、WebSocket mux"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+dsh-proto = { path = "../proto" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+tracing.workspace = true
