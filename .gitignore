@@ -1,0 +1,25 @@
+# 上游参考仓库（各自的 fork clone，独立版本管理，不纳入本项目）
+/dioxus/
+/deepseek-harness/
+
+# Rust / Cargo 构建产物
+/target/
+**/target/
+*.rs.bk
+*.profraw
+
+# Dioxus CLI 产物
+/dist/
+**/dist/
+
+# 编辑器与系统
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+
+# 本地环境与日志
+.env
+.env.local
+*.log
