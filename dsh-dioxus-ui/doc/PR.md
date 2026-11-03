@@ -4,7 +4,7 @@
 | --- | --- |
 | 文档 | 需求调研（Product Requirements / Research） |
 | 项目 | `dsh-dioxus-ui` —— 用 Dioxus 重写 deepseek-harness 的 Web GUI |
-| 版本 | v0.1（调研稿） |
+| 版本 | v0.2（P2 范围调整：多 Agent 协作 / 集群） |
 | 日期 | 2026-11-03 |
 | 上游基线 | `deepseek-harness` @ `ce7073d512`（master）、`dioxus` @ `7dfd07eb7`（main，v0.8.0-alpha.3） |
 
@@ -67,10 +67,10 @@
 | --- | --- |
 | 重写 Host / Agent 逻辑 | Host 是唯一后端，本项目只做客户端 |
 | 复刻 Cordis 插件系统与 HMR 热替换 | 编译期组件树替代；插件热更新属于开发体验，不在产品范围 |
-| 终端（pty） | 需要双向 uplink 流 + xterm 级渲染，二期再评估 |
+| 终端（pty） | 需要双向 uplink 流 + xterm 级渲染；已移入 P3 待办池（§5.9） |
 | 浏览器标签页（`ui-sidebar-browser`） | 上游 Web profile 已 `disabled`，仅 Desktop 有 |
 | 桌面原生能力（`openWorkspacePath`、原生目录选择等） | 依赖 Host 侧桌面/Electron 能力；本地 GUI 形态可后续评估，本期不做 |
-| 插件市场安装、动态插件运行 | 依赖 Host 侧插件管理 + 前端动态加载 |
+| 插件市场安装、动态插件运行 | 依赖 Host 侧插件管理 + 前端动态加载；已移入 P3 待办池（§5.9） |
 | SSR / 服务端渲染 / 离线 PWA | 纯本地工具，收益低 |
 | 像素级复刻 | 以信息结构与交互一致为准，允许控件实现不同 |
 
@@ -100,11 +100,12 @@
 | 视图 | 归属 | 说明 |
 | --- | --- | --- |
 | 会话页 | `ui-conversation` | 外壳 + composer + 队列/待办 dock；内含 Chat / Trajectory 两个 tab |
+| 子 Agent 目录 | `ui-subagent` | 会话 header 的后代计数触发 + 层级目录；打开子会话、续聊与独立停止（P2 主线） |
 | 设置 | `ui-settings-general` 壳 + 各 `ui-settings-*` | 分区：Account / General / Models / Plugins / Agent presets |
-| 插件管理 | `ui-plugin-manager` | 主面板 `plugins` |
-| 定时任务 | `ui-schedule` | 主面板 `schedules` |
-| 右栏 tab | `ui-sidebar-{files,documentpreview,terminal,browser}`、`ui-schedule` | 文件树 / 文档预览 / 终端 / 浏览器 / 任务 |
-| 会话内浮层 | `ui-approval`、`ui-user-questions`、`ui-plan`、`ui-goal`、`ui-subagent`、`ui-jobs`、`ui-model-selection`、`ui-permission-presets`、`ui-message-feedback`、`ui-deliverables`、`ui-attachment` | 审批、提问、计划、目标、子 Agent、任务、模型选择、权限预设、反馈、变更文件卡、附件 |
+| 插件管理 | `ui-plugin-manager` | 主面板 `plugins`（P3） |
+| 定时任务 | `ui-schedule` | 主面板 `schedules`（P3） |
+| 右栏 tab | `ui-sidebar-{files,documentpreview,terminal,browser}`、`ui-schedule` | 文件树 / 文档预览 / 终端 / 浏览器 / 任务（终端与任务 P3） |
+| 会话内浮层 | `ui-approval`、`ui-user-questions`、`ui-plan`、`ui-goal`、`ui-jobs`、`ui-model-selection`、`ui-permission-presets`、`ui-message-feedback`、`ui-deliverables`、`ui-attachment` | 审批、提问、计划、目标、任务、模型选择、权限预设、反馈、变更文件卡、附件 |
 
 ### 3.3 数据流（上游）
 
@@ -140,12 +141,15 @@ Host 权威状态 → Remote（HTTP unary / WS stream）→ Client model（React
 | S6 排查 | 切到 Trajectory 看 turn/step 轨迹；打开右栏看文件与文档 | 中频 |
 | S7 配置 | 改模型、agent preset、语言、字号、主题 | 低频 |
 | S8 断线恢复 | 笔记本休眠/网络抖动后回到页面，状态自动恢复 | 低频但关键 |
+| S9 多 Agent 协作 | 父会话下派出多个子 Agent：从 header 目录查看集群、进入某个子会话、续聊或单独停止，再返回父会话 | 中频（P2 主线） |
 
 ---
 
 ## 5. 功能需求
 
-优先级：**P0** = MVP 必须；**P1** = 完整工作流；**P2** = 增强/可选。
+优先级：**P0** = MVP 必须；**P1** = 完整工作流；**P2** = 本期主线「多 Agent 协作 / 集群」，只保留与该主线相关的需求；**P3** = 后续排期（本期不做，见 §5.9）。
+
+> 2026-11-03 范围调整：P2 收敛为「多 Agent 协作 / 集群」一条主线。原 P2 中与多 Agent 无关且尚未实现的条目全部降级为 P3；已实现项（如 F-46 队列管理）保留 P2 标记并注明状态。P2 的拆解见 §5.5，P3 清单见 §5.9。
 
 ### 5.1 连接与基础运行时
 
@@ -182,7 +186,7 @@ Host 权威状态 → Remote（HTTP unary / WS stream）→ Client model（React
 | F-26 | diff 视图（unified / 行内高亮） | P0 | 与上游 `DiffBlock` 视觉结构一致 |
 | F-27 | 文件引用（`#L24` / `:24-30`）可点击、图片附件可预览 | P1 | 点击定位/打开预览 |
 | F-28 | 消息操作：复制、重试、反馈（点赞/点踩） | P1 | 反馈落库（`messageFeedback/put`） |
-| F-29 | 变更文件卡（deliverables） | P2 | 列出本轮改动文件并可预览 |
+| F-29 | 变更文件卡（deliverables） | P3 | 非多 Agent 主线，见 §5.9 |
 | F-30 | raw HTML 永不按标记渲染；危险协议（`javascript:`）禁用 | P0（安全） | 注入用例不执行 |
 
 ### 5.4 输入与命令
@@ -195,17 +199,26 @@ Host 权威状态 → Remote（HTTP unary / WS stream）→ Client model（React
 | F-43 | `@` 引用文件/技能、`/` 斜杠命令补全并执行 | P1 | 补全列表来自 Host（`fileReferences/list`、`commands/list`） |
 | F-44 | 输入区状态：模型选择、权限预设、上下文占用（ContextMeter） | P1 | 与 Host 状态一致 |
 | F-45 | 中断：`session/cancel` 立即生效 | P0 | 点击后流式停止并标记 interrupted |
-| F-46 | 队列管理（查看/删除待发消息） | P2 | — |
+| F-46 | 队列管理（查看/删除待发消息） | P2（已实现） | `session/updateQueue` + `inbox` projection；`remove` / `steer` 已接通 |
 
-### 5.5 交互类浮层
+### 5.5 交互类浮层与子 Agent
 
 | ID | 需求 | 优先级 | 验收要点 |
 | --- | --- | --- | --- |
 | F-50 | 审批（approval）：一次/总是/拒绝；结果回 `$events/result` | P0 | 允许则工具继续，拒绝则中止且理由回传 |
 | F-51 | 用户提问（ask-question）：单选/多选/自由输入 | P0 | 回答经 `userQuestions/answer` 提交，Agent 继续 |
 | F-52 | 计划（plan）卡片：查看任务清单状态 | P1 | 与 plan 事件同步 |
-| F-53 | 子 Agent（subagent）状态与跳转 | P2 | — |
-| F-54 | 目标（goal）与调度（schedule）卡片 | P2 | — |
+| F-53 | 子 Agent 目录（集群视图）：父会话 header 显示直接子级数量，展开为可递归的层级目录；每行展示模式（one-shot / continuable / external / unknown）、活动状态、标题、累计用量与本轮耗时 | P2 | 父会话 `subagentCatalog` 非空或读取失败时出现入口；成功加载的空目录不显示；子级按需读取其 projections |
+| F-53b | 打开子会话：点击目录行，以精确地址 `{kind:"subagent", parentSessionId, childSessionId, mode}` 打开子会话；行尾箭头在右栏侧开 | P2 | 子会话的消息、流式、审批与普通会话一致；面包屑可返回父会话 |
+| F-53c | 子会话续聊：continuable 子会话在父会话存活时可直接输入并发送（`subagent/prompt`，delivery 支持 queue / steer），并可独立停止当前 turn（`subagent/interruptByParent`） | P2 | 续聊进入子会话 FIFO；停止只影响子会话，不动父会话 |
+| F-53d | 只读子会话：one-shot / unknown 模式，或父会话不可用且子会话已停止时，输入区降级为只读说明，不提供发送 | P2 | 只读态不发出 prompt；父离线但仍在运行的 continuable 子会话保留停止按钮 |
+| F-53e | 子 Agent 实时状态：运行/完成/空闲状态点、本轮耗时、累计 token 随 projection 帧更新；嵌套层级展开后同样实时 | P2 | 不使用轮询；数据来自 `session/control` 的 baseline + `projection` 增量 |
+| F-53f | 会话列表隔离：普通侧栏不出现 `origin == "subagent"` 的子会话 | P2 | `session/list` 含子会话时按 `origin` 过滤；子会话只能从父会话目录进入 |
+| F-54 | 目标（goal）与调度（schedule）卡片 | P3 | 非多 Agent 主线，见 §5.9 |
+
+**P2 可选（不阻塞 M4 退出）**：子 Agent 委派上限（`subagent` namespace 的 `maxDepth` / `maxActiveSubagents`）与子 Agent 模型选择（`subagent-model-selection`）。上游把它放在 Plugins 页；本项目若做，走 `settings/describe|mutate` 直连 namespace，不依赖插件管理页（F-80 仍在 P3）。
+
+> **集群范围的边界**：上游实验性 `agent-team` 只有 Host 侧 roster / task board 与工具标题文案，基线 Web 客户端没有团队面板。本期「集群视图」以子 Agent 目录（F-53）为准；若后续 Host 暴露 `agentTeam` projection，再在同一入口扩展。
 
 ### 5.6 布局、主题、设置
 
@@ -213,9 +226,10 @@ Host 权威状态 → Remote（HTTP unary / WS stream）→ Client model（React
 | --- | --- | --- | --- |
 | F-60 | 三栏布局：左栏折叠/拖拽调宽、右栏 dock、窄屏自适应 | P0 | 1280 / 1024 / 768 三档不破版 |
 | F-61 | 主题 light/dark/system + 字号（正文/代码/终端）+ 字体族 | P0 | 切换即时生效并持久化到 Host settings |
-| F-62 | 设置页：General / Models / Agent presets / About | P1 | 读写 `settings/describe|update` |
-| F-63 | 语言切换（zh / en，其余 P2） | P1 | 切换后界面文案即时更新 |
-| F-64 | 快捷键（新建会话、切换栏、发送、打开设置等） | P2 | 与上游默认键位一致 |
+| F-62 | 设置页：General / Models / Agent presets / About | P1 | 读写 `settings/describe\|update` |
+| F-63 | 语言切换（zh / en） | P1（已实现） | 切换后界面文案即时更新 |
+| F-63b | 其余语言（ja / es / fr / de / ru / pt） | P3 | 见 §5.9 |
+| F-64 | 快捷键（新建会话、切换栏、发送、打开设置等） | P3 | 非多 Agent 主线，见 §5.9 |
 | F-65 | 首帧不闪白（boot 前落地主题变量） | P1 | 深色系统下首屏直接深色 |
 
 ### 5.7 右栏与辅助视图
@@ -223,18 +237,36 @@ Host 权威状态 → Remote（HTTP unary / WS stream）→ Client model（React
 | ID | 需求 | 优先级 | 验收要点 |
 | --- | --- | --- | --- |
 | F-70 | 文件树（懒加载、搜索、右键菜单） | P1 | 与 `workspaceFiles/list` 一致 |
-| F-71 | 文档预览（文本/图片/PDF） | P2 | 大文件有上限提示 |
-| F-72 | Trajectory 视图（turn/step/工具/用量） | P1 | 可定位到具体 step |
-| F-73 | Jobs 列表与终止 | P2 | — |
-| F-74 | 终端 | P2（本期不做） | — |
+| F-71 | 文档预览：文本文件 | P2（已实现） | 右栏可读文本；大文件有上限提示 |
+| F-71b | 文档预览：图片 / PDF / 二进制 | P3 | 需新增解码与渲染链路，见 §5.9 |
+| F-72 | Trajectory 视图（turn/step/工具/用量） | P1 | 可定位到具体 step；用量/耗时聚合待补 |
+| F-73 | Jobs 列表与终止 | P3 | 见 §5.9 |
+| F-74 | 终端 | P3（本期不做） | 需双向 uplink + ANSI 渲染，见 §5.9 |
 
 ### 5.8 智能体与运维类面板
 
 | ID | 需求 | 优先级 | 说明 |
 | --- | --- | --- | --- |
-| F-80 | 插件管理 / 市场 | P2 | 依赖 Host 插件管理 RPC，工作量大、优先级低 |
-| F-81 | 定时任务面板 | P2 | — |
-| F-82 | 账号（登录/余额） | P2 | 需要 DeepSeek 账号链路 |
+| F-80 | 插件管理 / 市场 | P3 | 依赖 Host 插件管理 RPC，工作量大；见 §5.9 |
+| F-81 | 定时任务面板 | P3 | 见 §5.9 |
+| F-82 | 账号（登录/余额） | P3 | 需要 DeepSeek 账号链路；见 §5.9 |
+
+### 5.9 P3 待办池（本期不排期）
+
+以下条目由原 P2 降级或本就属于后续增强，**不纳入本期里程碑**；需要时单独排期。
+
+| ID | 需求 | 降级原因 / 前置依赖 |
+| --- | --- | --- |
+| F-29 | 变更文件卡（deliverables） | 依赖 deliverables 事件与预览链路；可与子会话预览共用部分能力 |
+| F-54 | 目标 / 调度卡片 | 依赖 `ui-goal`、`ui-schedule` 两个独立功能域 |
+| F-63b | 其余语言 | 需从上游 `locales.ts` 全量抽取字典，不影响主流程 |
+| F-64 | 快捷键 | 独立基建，需与上游 `shortcuts` 默认键位逐条对齐 |
+| F-71b | 图片 / PDF 预览 | 需要图片解码、PDF 渲染与二进制读取链路 |
+| F-73 | Jobs 列表与终止 | 依赖 Host jobs RPC |
+| F-74 | 终端 | 需双向 uplink 流 + xterm 级 ANSI 渲染，成本最高 |
+| F-80 | 插件管理 / 市场 | 依赖 Host 插件管理 RPC 与动态插件语义（与静态组件树取向冲突） |
+| F-81 | 定时任务面板 | 依赖 schedule 域 |
+| F-82 | 账号 | 依赖 DeepSeek 账号与计费链路 |
 
 ---
 
@@ -290,8 +322,11 @@ Host 权威状态 → Remote（HTTP unary / WS stream）→ Client model（React
 | M1 可对话 | 流式渲染 + Markdown/代码/diff + 工具卡 + 中断 | S2 场景端到端跑通 |
 | M2 可批复 | 审批 / 提问 / 队列 / steer | S3、S5 跑通 |
 | M3 可用 | 三栏布局 + 主题 + 会话管理 + 设置 + i18n | 日常使用不再回退上游前端 |
-| M4 完整 | 右栏文件/文档、Trajectory、附件与引用、搜索 | S1–S7 全部通过 |
+| M4 多 Agent 协作（P2 主线） | 子 Agent 目录/集群视图、子会话导航、续聊与独立停止、只读态、实时状态、列表隔离 | S9 跑通：父会话可浏览多个子 Agent，进入任一子会话并续聊/停止，普通侧栏不混入子会话 |
 | M5 打磨 | 虚拟列表、长会话、重连鲁棒性、体积优化 | 达到 §7 指标 |
+| P3 后续 | 原 P2 其余项 + F-71b + F-73/74 + F-80/81/82 | 不设退出标准，按需排期（见 §5.9） |
+
+> M4 是本期唯一的功能主线。P1 收尾项（附件与 `@` 引用、会话搜索、Trajectory 用量/耗时聚合）不单独设里程碑，随 M4 并行推进；P3 项不占用本期排期。
 
 ---
 
@@ -299,7 +334,8 @@ Host 权威状态 → Remote（HTTP unary / WS stream）→ Client model（React
 
 - [ ] 单一 Host（`dsh web`）可同时服务上游前端与 dsh-dioxus-ui，互不影响
 - [ ] S1–S7 手工清单全部通过（每项附操作步骤与预期）
-- [ ] 协议回放测试覆盖 P0 全部 endpoint 与帧类型
+- [ ] S9 多 Agent 清单通过：目录展开、子会话导航、续聊、独立停止、只读态各一条用例
+- [ ] 协议回放测试覆盖 P0 全部 endpoint 与帧类型，以及 P2 的 `subagent/prompt` / `subagent/interruptByParent` / `session/control`
 - [ ] 断网/休眠恢复后会话内容与操作可用
 - [ ] 无 raw HTML 注入执行；token 不出现在日志或磁盘明文
 - [ ] `dx build --platform desktop --release` 可在干净机器复现，产物为单文件且双击可用；浏览器形态另行验证
@@ -318,6 +354,7 @@ Host 权威状态 → Remote（HTTP unary / WS stream）→ Client model（React
 | 渲染子系统（高亮/公式/虚拟列表）无 Rust 等价物 | 体积/性能 | 分档实现（见 ARCH §6），P0 先用最简可行方案 |
 | CSS 迁移量大（`--dsw-*` + 100+ 组件样式） | 工时长 | 直接复用上游 token 与 CSS，按需裁剪 |
 | 长会话性能 | 卡顿 | 虚拟列表 + 折叠 + 增量解析缓存 |
+| 子 Agent 目录依赖 Host projection | 旧 Host 无 `subagentCatalog`，入口不可用或层级缺失 | 目录缺失即隐藏入口；`migration-required` 时只允许打开历史，不展开子级；不猜测子会话关系 |
 
 ---
 
@@ -358,6 +395,8 @@ Host 权威状态 → Remote（HTTP unary / WS stream）→ Client model（React
 | 前端架构 | `packages/client/web/src/{boot,boot-client,mount}.ts`、`packages/client/AGENTS.md` |
 | 布局/槽位 | `packages/client/ui-layout/src/client/{index.ts,AppFrame.tsx}`、`packages/client/ui-slots/README.md` |
 | 渲染管线 | `packages/client/ui-primitives/src/markdown/*`、`packages/client/ui-tool/src/client/tool/toolviews/*` |
+| 子 Agent 目录/续聊 | `packages/client/ui-subagent/src/client/{SubagentHeaderLineage.tsx,SubagentReadOnlyComposer.tsx,index.ts,sidebar-chat/*}`、`packages/subagent/subagent/src/{projection-types.ts,control-types.ts,index.ts,list-children.ts}` |
+| 子 Agent 设置 | `packages/client/ui-settings-subagent/src/client/*`（`maxDepth` / `maxActiveSubagents`、模型选择） |
 | 架构文档 | `docs/api-gateway.md`、`docs/subsystems/web-client.md`、`docs/subsystems/slots.md`、`docs/web-styling.md` |
 
 > Dioxus 侧依据见 `ARCH.md` §2。

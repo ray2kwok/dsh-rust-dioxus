@@ -4,7 +4,7 @@
 | --- | --- |
 | 文档 | 架构设计（Architecture Design） |
 | 项目 | `dsh-dioxus-ui` —— Dioxus 实现的 deepseek-harness 本地 GUI |
-| 版本 | **v0.2**（本地 GUI 形态；v0.1 为浏览器 WASM 形态） |
+| 版本 | **v0.3**（P2 收敛为多 Agent 协作 / 集群；v0.2 为本地 GUI 形态，v0.1 为浏览器 WASM 形态） |
 | 日期 | 2026-11-03 |
 | 关联 | 需求与范围见 `PR.md` |
 | 上游基线 | `deepseek-harness` @ `ce7073d512`；`dioxus` @ `7dfd07eb7`（0.8.0-alpha.3） |
@@ -146,7 +146,7 @@
 | Markdown | `pulldown-cmark` | 0.13 | GFM：表格/任务列表/脚注/删除线；比 comrak 更省 |
 | 高亮 | `syntect` | 5.3 | 功能优先；语法集全量 |
 | Diff | `similar` | 3.x | hunk + 行内变更 |
-| ANSI | `vte` | — | 终端输出块（P2） |
+| ANSI | `vte` | — | 终端输出块（P3） |
 | 进程 | `std::process::Command` + 读线程 | — | 拉起 Host，解析 stdout |
 | 构建 | `dx`（dioxus-cli） | 与框架同版本 | `dx build --platform desktop --release` |
 
@@ -228,7 +228,7 @@ pub struct ServerResponse<T> {
    `gateway/internal: Remote payload must contain exactly one plain-object args field`。
    代码里统一用 `MuxConnection::open_args()` 自动补壳。
 
-P0/P1 需要的 endpoint（`args` 键带 ⚠ 的需抓包核对）：
+P0/P1/P2 需要的 endpoint（`args` 键带 ⚠ 的需抓包核对）：
 
 | endpoint | args 键 | 用途 | 优先级 |
 | --- | --- | --- | --- |
@@ -238,7 +238,7 @@ P0/P1 需要的 endpoint（`args` 键带 ⚠ 的需抓包核对）：
 | `session/cancel` | `request` | 中断 | P0 |
 | `session/follow` (stream) | `request` | 打开会话（快照 + 增量 + 流式） | P0 |
 | `session/page` | `request` | 向上翻历史 | P0 |
-| `session/control` (stream) | — | 全 Host projection 基线/增量 | P1 |
+| `session/control` (stream) | — | 全 Host projection 基线/增量（子 Agent 实时状态来源） | P1 |
 | `session/rename` / `fork` | `request` | 重命名 / 分支 | P1 |
 | `workspace/follow` (stream) | `request` ⚠ | 工作区与会话归属 | P0 |
 | `settings/describe` / `update` | `request` ⚠ | 设置读写 | P1 |
@@ -247,6 +247,9 @@ P0/P1 需要的 endpoint（`args` 键带 ⚠ 的需抓包核对）：
 | `fileReferences/list` | `agentId, …` ⚠ | `@` 引用 | P1 |
 | `workspaceFiles/list` / `read` | `workspaceFileScopeId, …` ⚠ | 文件树 / 预览 | P1 |
 | `$events/result` | `clientId, eventId, outcome` | 审批/waterfall 回执 | P0 |
+| `session/projections` | `sessionId` | 按需读取某会话的 projection（子目录展开 / 失败重试） | P2 |
+| `subagent/prompt` | `request` | continuable 子会话续聊（`delivery: queue\|steer`） | P2 |
+| `subagent/interruptByParent` | `childSessionId, parentSessionId, mode` | 子会话独立停止当前 turn | P2 |
 
 核心帧类型（照抄上游 `stream-protocol.ts` / `session-controller/types.ts`）：
 
@@ -267,6 +270,18 @@ pub enum SessionFollowFrame {
                has_more: bool, projections: SessionProjectionBaseline },
     Event { event: SessionWireEvent },
     AssistantStream { frame: AssistantStreamFrame },
+}
+
+// session/control 下行（子 Agent 状态的实时来源）
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum SessionControlFrame {
+    Baseline { value: SessionControlBaseline },   // { projections: { <sessionId>: { values, asOfSeq } } }
+    Projection {
+        #[serde(rename = "sessionId")] session_id: String,
+        key: String,
+        value: Value,
+        seq: u64,
+    },
 }
 ```
 
@@ -424,11 +439,11 @@ AppShell
 │   └── Footer：Settings / Plugins / Schedules
 ├── MainPanel          （enum MainPanel { Conversation, Plugins, Schedules }）
 │   └── ConversationPage
-│       ├── ConversationHeader（标题 / ContextMeter / ConnectionIndicator）
+│       ├── ConversationHeader（标题 / ContextMeter / ConnectionIndicator / SubagentCatalog）
 │       ├── MessageList（虚拟列表 + 流式尾块）
 │       ├── ApprovalOverlay / QuestionOverlay
 │       └── Composer（输入 / 模型 / 权限 / 附件 / @ / 斜杠命令）
-└── RightBar           （dock：Files / DocumentPreview / Trajectory）
+└── RightBar           （dock：Files / DocumentPreview / Trajectory / SubagentChat）
 ```
 
 桌面窗口：默认 1280×840，最小 960×600；窗口尺寸与位置持久化到本地配置文件（不走 Host settings）。
@@ -455,8 +470,13 @@ enum Route {
 | --- | --- | --- |
 | `activePanelId = null` 且有选中会话 | `Session { session_id }` | 主路径 |
 | `activePanelId = null` 无会话 | `Home` | 空态 / 最近会话 |
-| `plugins` / `schedules` | `Plugins` / `Schedules` | P2 |
+| `plugins` / `schedules` | `Plugins` / `Schedules` | P3 |
 | 设置分区 | `Settings { section }` | `general`/`models`/`presets`/`about` |
+
+> 子会话**不新增 Route**：主面板仍是 `Session { session_id }`，完整的子会话地址
+> （`parentSessionId` + `childSessionId` + `mode`）放在会话状态里，由 `session/follow`
+> 的 `address` 携带。这与上游「无 URL 路由、按 Session 引用切换」一致，也避免
+> 把父子关系编码进 URL 后与 Host 的地址语义漂移。
 
 ### 10.3 订阅纪律（对应上游 `packages/client/AGENTS.md`）
 
@@ -464,6 +484,71 @@ enum Route {
 2. 派生数据用 `use_memo`；列表项以 `id` 作 key，避免整表重渲。
 3. 组件不持有连接，异步结果一律写回 signal。
 4. 大对象传递用 `Memo` 或 id，不 clone 整个 `Vec`。
+
+### 10.4 子 Agent 目录与子会话（P2 主线）
+
+P2 只做「多 Agent 协作 / 集群」这一条主线；其余增强项统一进 P3（见 PR §5.9）。
+
+**入口与形态**
+
+- 会话 header 保留标题作为血缘面包屑；父会话的 `subagentCatalog` 非空、或读取失败时，
+  在 preset 标签之后显示后代计数触发器；成功加载的空目录不显示入口。
+- 触发器打开层级目录：每行 = 状态点 / 加载环 + 模式徽标（one-shot / continuable /
+  external / unknown）+ 标题，右侧上下两行分别是累计用量与本轮耗时。
+- 行可展开子级：展开时才读取该子会话的 projections，不预取整棵树；自身目录读空后才算已知叶子。
+- external 行永远是叶子（没有本地子会话）；unknown 行保持可点，进入后由历史确认模式。
+
+**导航**
+
+- 点击行 → 打开精确地址 `{kind:"subagent", parentSessionId, childSessionId, mode}`，
+  主面板复用普通会话视图；行尾箭头 → 在右栏侧开子会话。
+- 返回父会话走面包屑，包含从未在本机打开过的祖先（地址从已加载目录推导，不额外请求）。
+- 子会话不新增 Route，也不额外刷新父目录：地址即身份，父目录保持原样。
+
+**续聊与停止**
+
+| 子会话状态 | 输入区 | 停止 |
+| --- | --- | --- |
+| continuable + 父会话存活 | 普通 composer，发送走 `subagent/prompt`（`delivery: queue\|steer`） | `subagent/interruptByParent`，只停子会话当前 turn |
+| continuable + 父不可用 + 运行中 | 输入禁用 | 停止可用 |
+| continuable + 父不可用 + 已停止 | 只读说明（提示恢复路径） | 无 |
+| one-shot / unknown | 只读记录 | 无 |
+
+续聊内容作为子会话的普通 FIFO 用户消息，不写父会话。`mode` 必须原样回传
+（`continuable`），未知模式在历史确认前不发 prompt。
+
+**状态与实时**
+
+- 耗时 = `subagentTiming.settledMs` + 当前 turn 的 `active.{since, through}`
+  （`through` 是 projection 切点，不取更新的会话元数据）；已停止的子会话冻结时长。
+- 累计用量 = `tokenUsage` 的四个互斥桶（input / output / cacheRead / cacheWrite）之和。
+- 完成态取最近一个已闭合 turn 的 `lastTurnCompleted`；运行中用统一 loading，
+  正常完成用成功点，其余未运行一律 idle 点。
+- 数据来自 `session/control`：`baseline` 原子替换全部会话 projections，
+  `projection` 增量按键更新；`session/follow` 的 snapshot 只用于首次渲染。
+
+**列表隔离与降级**
+
+- `session/list` 会返回子会话，普通侧栏按 `origin == "subagent"` 过滤（同上游
+  `ui-workspace` 的树过滤）；子会话只能从父会话目录进入。
+- 旧 Host 无 `subagentCatalog` → 隐藏入口；`formatStatus == "migration-required"` →
+  行显示「需要迁移」，只能打开历史，不展开子级。
+
+**范围边界**：上游 `@deepseek-ai/dsh-experimental-agent-team` 只提供 Host 侧
+roster / task board 与工具标题文案，基线 Web 客户端没有团队面板；本期 P2 不新增
+「团队」视图。若后续 Host 暴露 `agentTeam` projection，再复用本节的目录入口扩展，
+不改变子会话地址与导航语义。
+
+**实施切片（每片可独立验证）**
+
+| 切片 | 内容 | 主要文件 |
+| --- | --- | --- |
+| P2-1 | projection 类型 + 目录数据模型 + header 触发器与层级树 | `crates/proto/src/subagent.rs`、`crates/ui/src/subagent.rs` |
+| P2-2 | 子会话地址贯通 `session/follow`、面包屑、右栏侧开 | `crates/proto/src/session.rs`、`crates/runtime`、`crates/app` |
+| P2-3 | 续聊 / 独立停止 / 只读 composer | `crates/runtime`、`crates/ui/src/conversation.rs` |
+| P2-4 | `session/control` 归约 + 实时状态 + 列表过滤 | `crates/state`、`crates/proto/src/stream.rs` |
+
+验收口径见 PR §5.5 的 F-53～F-53f 与 §10 的 S9 清单。
 
 ---
 
@@ -478,7 +563,7 @@ enum Route {
 | Diff | `similar::TextDiff` → hunk + 行内 tag | 与上游 `DiffBlock` 的行号/颜色结构对齐 |
 | 工具卡 | `match tool_name` → 专用组件，未命中 → `GenericToolCard` | 上游 25+ node / 10+ toolview，按 P0 分批 |
 | JSON 树 | 自研递归组件 | 上限深度/节点数，超出截断 |
-| ANSI | `vte` → span 样式 | P2 |
+| ANSI | `vte` → span 样式 | P3 |
 | 图片 | `<img src={file_url(path)}>` + 灯箱 | 走 `/api/file?path=&v=` |
 
 KaTeX 说明：`katex`/`ratex` crate 均不成熟（前者是 JS 绑定，后者 0.0.1）。做法是把上游的 `katex.min.js` + `katex.min.css` + WOFF2 字体用 `asset!` 打包，首次渲染公式时用 `document::eval` 注入一次（内联脚本，无网络请求），之后每题 `eval` 只做排版调用。字体加载失败时降级为等宽文本。
@@ -517,7 +602,7 @@ pub fn apply_theme(theme: Theme) {   // 对应上游 theme-presenter.ts
   切换语言触发重渲，无需重启。
 - 数据层不写死语言：`map.rs` 的时间戳用 `now/3m/2h/3d` 这类中立格式，
   标题用短 id（真正的标题来自 projections/rename）。
-- 待办：从上游 `locales.ts` 抽取完整字典（当前只覆盖界面 chrome），
+- 待办（P3）：从上游 `locales.ts` 抽取完整字典（当前只覆盖界面 chrome），
   以及把语言选择写进 Host `settings`（namespace `locale` / 字段 `preference`）。
 ## 13.1 projection 是「第二数据源」
 
@@ -530,6 +615,14 @@ pub fn apply_theme(theme: Theme) {   // 对应上游 theme-presenter.ts
 | `inbox` | 待发消息（队列） | `{ "next-turn": [...], "next-step": [...] }` |
 | `contextPressure` | 上下文占用 | `{ surfaceTokens, contextWindow?, pressureTokens? }` |
 | `sessionStats` | 用量统计 | 未使用 |
+| `subagentCatalog` | 直接子 Agent 目录（挂在父会话） | `[{id, createdAt, mode, label?}]` ⚠ 待实测 |
+| `subagentTiming` | 子会话耗时/完成态 | `{ settledMs, active?: {since, through}, lastTurnCompleted? }` ⚠ 待实测 |
+| `subagent` | 子会话身份 | `{ mode, label?, seq } \| null` ⚠ 待实测 |
+| `tokenUsage` | 累计用量（四桶） | `{ inputTokens, outputTokens, cacheReadTokens?, cacheWriteTokens? }` ⚠ 待实测 |
+
+**实时性**：follow 的 `snapshot` 只给一次 baseline。子 Agent 的运行状态、耗时与用量要
+实时变化，必须另开 `session/control`（`baseline` 全量替换 + `projection` 增量）。
+P2-4 之前只能显示「打开时快照」，不满足 F-53e。
 
 **归档不在 projection 里**：`session/list` 会返回归档会话，真实标记在
 `workspace/follow` 的 baseline：
@@ -704,16 +797,17 @@ dx build --platform desktop --release
 > | --- | --- | --- |
 > | M0 打通 | ✅ | 握手 → list → create → follow → `SessionView` → 渲染，全部对真实 Host 验证 |
 > | M1 渲染 | ✅ | Markdown、diff 解析、零依赖高亮、通用工具卡、流式合批 |
-> | M2 交互 | ◐ | 审批闭环 + `$events/result` 已通（含幂等实测）；`steer` 模式已通；**待做**：ask-question、队列管理 |
+> | M2 交互 | ✅ | 审批闭环 + `$events/result`（含幂等实测）；ask-question（选项 + 自定义回答）；queue/steer 与队列管理（`session/updateQueue` + `inbox` projection） |
 > | M3 可用 | ◐ | 三栏 + 主题切换 + 设置面板 + 轨迹视图；视觉对齐上游 token（配色/圆角/字体/滚动条）；
 > 图标已改用上游 `artwork.ts` 的真实 SVG 几何（内联，无 sprite）；
 > 会话重命名/归档、ask-question（选项 + 自定义回答）、i18n（zh/en，键为枚举）已接通；
 > 队列（`session/updateQueue` + `inbox` projection）、**历史分页（`session/page`）**、
 > 上下文占用（`contextPressure`）、标题（`title` projection）、
 > 归档过滤（`workspace/follow` 的 `archivedSessionIds`）、新建会话、diff 卡片均已接通。
-> **待做**：完整 i18n 字典（目前仅界面 chrome，未从 `locales.ts` 全量抽取） |
-> | M4 完整 | ◐ | 右栏文件树 + 文本预览可用；**待做**：Trajectory 的用量/耗时聚合、附件与 @ 引用 |
+> 完整 i18n 字典已随范围调整移入 P3 |
+> | M4 多 Agent（P2 主线） | ○ | 未开工，当前只有 `SessionAddress::Subagent` 类型。设计见 §10.4，切片 P2-1～P2-4 |
 > | M5 打磨 | ◐ | 消息渲染窗口化（最近 300 条）+ release 4.7MB + 冒烟脚本；**待做**：真虚拟列表、内存曲线 |
+> | P3 后续 | — | 图片/PDF 预览、终端、Jobs、插件/定时/账号等（PR §5.9）；附件与 @ 引用、搜索仍属 P1，随 M4 并行 |
 >
 > 已实测的健壮性：杀掉 Host → 500ms 退避 → 新 Host → generation+1；手动重连按钮同样走这条路径。
 
@@ -722,13 +816,14 @@ dx build --platform desktop --release
 | M0-1 | workspace 骨架、`rust-toolchain.toml`、`Dioxus.toml`、空窗口 | `Cargo.toml`、`crates/app` |
 | M0-2 | `dsh-proto`：信封 + `$events` + `session/follow` 帧 + 错误 | `crates/proto` |
 | M0-3 | `dsh-transport`：HostSupervisor + Credential + RpcClient + MuxConnection + 重连 | `crates/transport` |
-| M0-4 | `dsh-state`：AppState/SessionView/归约 + `session/list|create|prompt` | `crates/state` |
+| M0-4 | `dsh-state`：AppState/SessionView/归约 + `session/list\|create\|prompt` | `crates/state` |
 | M0-5 | 最小 UI：会话列表 + 纯文本消息 + 输入框 | `crates/ui` |
 | M1 | `dsh-render`（Markdown/代码/diff）+ 工具卡 + 流式 + 中断 | `crates/render`、`crates/ui` |
 | M2 | 审批 / 提问 / 队列 / steer / overlay 层 | `crates/ui/overlays` |
 | M3 | 三栏布局 + 主题 + 会话管理 + 设置 + i18n | `crates/ui/{layout,settings}` |
-| M4 | 右栏文件/预览、Trajectory、附件与引用、搜索 | `crates/ui/rightbar` |
+| M4 | 多 Agent 协作/集群：子 Agent 目录、子会话导航、续聊与独立停止、列表隔离 | `crates/proto/src/subagent.rs`、`crates/runtime`、`crates/ui/src/{conversation,subagent}.rs` |
 | M5 | 虚拟列表、体积与内存、重连鲁棒性、e2e 固化 | 全局 |
+| P3 | 图片/PDF 预览、终端、Jobs、插件/定时/账号 | 按需（见 PR §5.9） |
 
 ---
 
@@ -748,6 +843,8 @@ dx build --platform desktop --release
 | 上游 CSS 直接复用的类名冲突 | 样式错乱 | 统一前缀 + 单文件顺序加载；不兼容处逐文件手改 |
 | `args` 键名与假设不符 | 调用 4xx | M0 阶段抓包校验全部 P0 endpoint，写进单测 |
 | 长文本/大 diff 渲染卡顿 | 工具输出巨大 | 阈值截断 + 按需展开；解析放最终态 |
+| 子 Agent 状态不更新 | 只开了 `session/follow`，没收 `session/control` | P2-4 先补 control 流与 projection 归约；用录制的 baseline/projection 帧做回放测试 |
+| 子 Agent 目录与上游形状漂移 | projection 未实测 | P2-1 先对真实 Host 探测 `subagentCatalog` / `subagentTiming`，把样本写入 proto 单测 |
 
 ---
 
