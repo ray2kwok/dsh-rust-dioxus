@@ -519,6 +519,27 @@ pub fn apply_theme(theme: Theme) {   // 对应上游 theme-presenter.ts
   标题用短 id（真正的标题来自 projections/rename）。
 - 待办：从上游 `locales.ts` 抽取完整字典（当前只覆盖界面 chrome），
   以及把语言选择写进 Host `settings`（namespace `locale` / 字段 `preference`）。
+## 13.1 projection 是「第二数据源」
+
+`session/follow` 的 `snapshot.projections.values` 是一个扁平 map，键由各插件注册。
+实测可用的键与我们用到的：
+
+| key | 用途 | 形状 |
+| --- | --- | --- |
+| `title` | 会话标题 | `string \| null` |
+| `inbox` | 待发消息（队列） | `{ "next-turn": [...], "next-step": [...] }` |
+| `contextPressure` | 上下文占用 | `{ surfaceTokens, contextWindow?, pressureTokens? }` |
+| `sessionStats` | 用量统计 | 未使用 |
+
+**归档不在 projection 里**：`session/list` 会返回归档会话，真实标记在
+`workspace/follow` 的 baseline：
+
+```json
+{"type":"baseline","value":{"archivedSessionIds":["session-…"],"items":[],"pinnedSessionIds":[]}}
+```
+
+因此 UI 用 `archivedSessionIds` 过滤列表，而不是把归档当成删除。
+
 
 ---
 
@@ -687,7 +708,9 @@ dx build --platform desktop --release
 > | M3 可用 | ◐ | 三栏 + 主题切换 + 设置面板 + 轨迹视图；视觉对齐上游 token（配色/圆角/字体/滚动条）；
 > 图标已改用上游 `artwork.ts` 的真实 SVG 几何（内联，无 sprite）；
 > 会话重命名/归档、ask-question（选项 + 自定义回答）、i18n（zh/en，键为枚举）已接通；
-> **待做**：队列管理（`session/updateQueue` 的 action 枚举未确认） |
+> 队列（`session/updateQueue` + `inbox` projection）、消息分页、上下文占用（`contextPressure`）、
+> 标题（`title` projection）、归档过滤（`workspace/follow` 的 `archivedSessionIds`）均已接通。
+> **待做**：完整 i18n 字典（仅界面 chrome） |
 > | M4 完整 | ◐ | 右栏文件树 + 文本预览可用；**待做**：Trajectory 的用量/耗时聚合、附件与 @ 引用 |
 > | M5 打磨 | ◐ | 消息渲染窗口化（最近 300 条）+ release 4.7MB + 冒烟脚本；**待做**：真虚拟列表、内存曲线 |
 >

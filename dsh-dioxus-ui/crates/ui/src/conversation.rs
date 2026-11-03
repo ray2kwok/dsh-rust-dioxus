@@ -6,12 +6,16 @@ use crate::i18n::{self, Key, use_t};
 use crate::icons::Icon;
 use crate::markdown::MarkdownView;
 use crate::model::{
-    ApprovalItem, ConnectionState, MessageRow, QuestionCard, Role, SendMode, TrajectoryRow,
+    ApprovalItem, ConnectionState, MessageRow, QuestionCard, QueueItem, Role, SendMode,
+    TrajectoryRow,
 };
 use crate::tool_card::ToolCard;
 
-/// 单次渲染的消息上限。超出后只渲染尾部，保证长会话不卡。
-const MAX_RENDER: usize = 300;
+/// 首屏渲染的消息条数；点「加载更早」每次追加同样数量。
+///
+/// 不用固定高度的「真虚拟列表」：消息高度差异很大（Markdown/工具卡/代码块），
+/// 估算高度会导致滚动跳动，收益不如按需追加。
+const PAGE: usize = 200;
 
 #[component]
 pub fn ConversationView(
@@ -26,6 +30,11 @@ pub fn ConversationView(
     #[props(default = EventHandler::new(|_| {}))] on_cancel: EventHandler<()>,
     #[props(default = EventHandler::new(|_| {}))] on_decide: EventHandler<(String, bool)>,
     #[props(default = Vec::new())] questions: Vec<QuestionCard>,
+    #[props(default = Vec::new())] queue: Vec<QueueItem>,
+    /// 上下文占用（surfaceTokens, contextWindow）
+    #[props(default = None)]
+    context_usage: Option<(u64, u64)>,
+    #[props(default = EventHandler::new(|_| {}))] on_queue_action: EventHandler<(String, bool)>,
     /// (event_id, selected labels, custom text)
     #[props(default = EventHandler::new(|_| {}))]
     on_answer: EventHandler<(String, Vec<String>, String)>,
@@ -61,7 +70,8 @@ pub fn ConversationView(
     }
 
     let can_send = connection == ConnectionState::Connected;
-    let truncated = messages.len().saturating_sub(MAX_RENDER);
+    let mut render_count = use_signal(|| PAGE);
+    let truncated = messages.len().saturating_sub(render_count());
 
     rsx! {
         section { class: "conversation",
@@ -107,6 +117,18 @@ pub fn ConversationView(
                     }
                 }
                 span { class: "spacer" }
+                if let Some((used, window)) = context_usage {
+                    {
+                        let percent = ((used as f64 / window as f64) * 100.0).round() as u64;
+                        rsx! {
+                            span {
+                                class: if percent >= 85 { "meter meter--hot" } else { "meter" },
+                                title: "{used} / {window} tokens",
+                                "{percent}%"
+                            }
+                        }
+                    }
+                }
                 button {
                     class: "icon-btn",
                     title: "{t.get(Key::Archive)}",
@@ -127,8 +149,10 @@ pub fn ConversationView(
                         div { class: "empty muted", "{t.get(Key::NoMessages)}" }
                     }
                     if truncated > 0 {
-                        div { class: "muted truncation-hint",
-                            "仅渲染最近 {MAX_RENDER} 条（共 {messages.len()} 条）"
+                        button {
+                            class: "load-earlier",
+                            onclick: move |_| render_count.set(render_count() + PAGE),
+                            "加载更早的 {truncated} 条"
                         }
                     }
                     for message in messages.iter().skip(truncated) {
@@ -175,6 +199,35 @@ pub fn ConversationView(
                                             onclick: move |_| on_decide.call((deny_id.clone(), false)),
                                             "{t.get(Key::Reject)}"
                                         }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !queue.is_empty() {
+                div { class: "queue-strip",
+                    span { class: "queue-strip__label muted", "{queue.len()}" }
+                    for item in queue.iter() {
+                        {
+                            let remove_id = item.id.clone();
+                            let steer_id = item.id.clone();
+                            rsx! {
+                                div { key: "{item.id}", class: "queue-item",
+                                    span { class: "queue-item__text", "{item.text}" }
+                                    button {
+                                        class: "icon-btn",
+                                        title: "{t.get(Key::Steer)}",
+                                        onclick: move |_| on_queue_action.call((steer_id.clone(), true)),
+                                        Icon { glyph: "send-outline".to_string(), size: 14.0 }
+                                    }
+                                    button {
+                                        class: "icon-btn",
+                                        title: "{t.get(Key::Reject)}",
+                                        onclick: move |_| on_queue_action.call((remove_id.clone(), false)),
+                                        Icon { glyph: "close-outline".to_string(), size: 14.0 }
                                     }
                                 }
                             }

@@ -18,8 +18,9 @@ use dsh_proto::events::{
     RemoteEventFrame, RemoteEventResult,
 };
 use dsh_proto::session::{
-    PromptContent, PromptMode, SessionCreateRequest, SessionCreateValue, SessionFollowFrame,
-    SessionListValue, SessionPromptRequest, SessionPromptValue, SessionSummary,
+    PromptContent, PromptMode, QueueAction, SessionCreateRequest, SessionCreateValue,
+    SessionFollowFrame, SessionListValue, SessionPromptRequest, SessionPromptValue, SessionSummary,
+    SessionUpdateQueueRequest,
 };
 use dsh_state::SessionView;
 use dsh_transport::{
@@ -58,6 +59,11 @@ impl DshClient {
         let mux = MuxConnection::connect(host.base_url(), Some(&credential)).await?;
 
         Ok(Self { host, rpc, mux })
+    }
+
+    /// 底层 RPC 客户端（探测/诊断用）。
+    pub fn rpc(&self) -> &RpcClient {
+        &self.rpc
     }
 
     pub fn base_url(&self) -> String {
@@ -138,6 +144,30 @@ impl DshClient {
         );
         self.mux
             .open_args(session_ep::FOLLOW, json!({ "request": request }))
+    }
+
+    /// 打开 `workspace/follow`（工作区与会话归属的基线 + 增量）。
+    pub fn follow_workspace(&self) -> Result<StreamHandle, TransportError> {
+        self.mux
+            .open_args(dsh_proto::endpoint::workspace::FOLLOW, json!({}))
+    }
+
+    /// 从 `workspace/follow` 的 baseline 帧里取归档会话 id。
+    ///
+    /// 实测形状：`{"type":"baseline","value":{"archivedSessionIds":[..],"items":[],"pinnedSessionIds":[..]}}`
+    /// —— `session/list` 仍会返回归档会话，需要用它过滤。
+    pub fn archived_ids(value: &serde_json::Value) -> Vec<String> {
+        value
+            .get("value")
+            .and_then(|value| value.get("archivedSessionIds"))
+            .and_then(serde_json::Value::as_array)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// 打开 `$events`（连接代次与审批 waterfall 的来源）。
@@ -379,6 +409,47 @@ impl DshClient {
 }
 
 impl DshClient {
+    /// 修改队列项。形状已对真实 Host 验证：
+    /// `{request:{sessionId,itemId,action:{kind:"remove"|"steer"|"edit",content?}}}`
+    /// —— 合法形状会走到业务错误 `session/queue-item-not-found`，非法形状则是
+    /// `gateway/input-invalid`。
+    pub async fn update_queue(
+        &self,
+        session_id: impl Into<String>,
+        item_id: impl Into<String>,
+        action: QueueAction,
+    ) -> Result<(), TransportError> {
+        let request = SessionUpdateQueueRequest {
+            session_id: dsh_proto::session::SessionId::new(session_id),
+            item_id: item_id.into(),
+            action,
+        };
+        self.rpc
+            .call_value(session_ep::UPDATE_QUEUE, json!({ "request": request }))
+            .await
+            .map(|_| ())
+    }
+
+    /// 从队列移除一条待发消息。
+    pub async fn remove_queued(
+        &self,
+        session_id: impl Into<String>,
+        item_id: impl Into<String>,
+    ) -> Result<(), TransportError> {
+        self.update_queue(session_id, item_id, QueueAction::Remove)
+            .await
+    }
+
+    /// 把队列项立即插入（打断当前 turn）。
+    pub async fn steer_queued(
+        &self,
+        session_id: impl Into<String>,
+        item_id: impl Into<String>,
+    ) -> Result<(), TransportError> {
+        self.update_queue(session_id, item_id, QueueAction::Steer)
+            .await
+    }
+
     /// 回答问题（`userQuestions/answer`）。`answer` 是 `AskUserQuestionAnswer` 的 JSON。
     pub async fn answer_question(
         &self,

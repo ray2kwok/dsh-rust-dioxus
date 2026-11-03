@@ -27,7 +27,7 @@ pub use icons::Icon;
 pub use layout::AppShell;
 pub use markdown::MarkdownView;
 pub use model::{
-    ApprovalItem, ConnectionState, FileEntry, MessageRow, QuestionCard, QuestionItemView, Role,
-    SendMode, SessionStatus, SessionSummary, Theme, TrajectoryRow,
+    ApprovalItem, ConnectionState, FileEntry, MessageRow, QuestionCard, QuestionItemView,
+    QueueItem, Role, SendMode, SessionStatus, SessionSummary, Theme, TrajectoryRow,
 };
 pub use tool_card::ToolCard;

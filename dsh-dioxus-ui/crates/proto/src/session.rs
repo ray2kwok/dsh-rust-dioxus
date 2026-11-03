@@ -691,3 +691,34 @@ pub struct QuestionAnswerItem {
 pub struct QuestionAnswer {
     pub answers: Vec<QuestionAnswerItem>,
 }
+
+/// 队列项上的操作。上游 `packages/api/session-controller/src/types.ts:141`
+///
+/// ```ts
+/// { kind: 'edit', content: TextBlock[] } | { kind: 'remove' } | { kind: 'steer' }
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum QueueAction {
+    /// 用新的文本内容替换待发消息。
+    Edit { content: Vec<PromptContent> },
+    /// 从队列移除。
+    Remove,
+    /// 立即插入（等同打断后发送）。
+    Steer,
+}
+
+/// `session/updateQueue` 请求。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionUpdateQueueRequest {
+    pub session_id: SessionId,
+    pub item_id: String,
+    pub action: QueueAction,
+}
+
+/// `session/updateQueue` 响应。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionUpdateQueueValue {
+    pub accepted: bool,
+}

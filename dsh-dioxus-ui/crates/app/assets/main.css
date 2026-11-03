@@ -1014,3 +1014,76 @@ body[data-ds-dark-theme] .tok--fn {
   outline: none;
   margin-bottom: 10px;
 }
+
+/* ---------------------------------------------------------------- 加载更早 */
+
+.load-earlier {
+  align-self: center;
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-secondary);
+  border-radius: 999px;
+  padding: 4px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  margin-bottom: 8px;
+}
+
+.load-earlier:hover {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* ---------------------------------------------------------------- 上下文占用 / 队列 */
+
+.meter {
+  font-size: 11px;
+  color: var(--dsw-alias-label-caption);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.meter--hot {
+  color: var(--dsw-alias-state-warn-label);
+  border-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 45%, transparent);
+}
+
+.queue-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: min(820px, calc(100% - 40px));
+  margin: 0 auto 8px;
+  padding: 6px 10px;
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-2);
+  border: 1px solid var(--dsw-alias-border-l1);
+  overflow-x: auto;
+}
+
+.queue-strip__label {
+  font-size: 11px;
+  flex: 0 0 auto;
+}
+
+.queue-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px 3px 10px;
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-layer-1);
+  border: 1px solid var(--dsw-alias-border-l2);
+  flex: 0 0 auto;
+}
+
+.queue-item__text {
+  font-size: 12px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dsw-alias-label-secondary);
+}

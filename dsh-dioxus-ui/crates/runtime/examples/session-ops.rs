@@ -3,7 +3,10 @@
 //! 这些方法里，`session/rename` 的形状来自上游类型定义；
 //! `workspace/archiveSession` 的 `args` 尚未实测，本示例用来确认。
 
+use std::time::Duration;
+
 use dsh_runtime::DshClient;
+use dsh_transport::StreamEvent;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -26,6 +29,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(()) => println!("archive  = ok"),
         Err(err) => println!("archive  = ERR {err}"),
     }
+
+    // 归档不在 session/list 里体现，而在 workspace/follow 的 baseline
+    let mut workspace = client.follow_workspace()?;
+    if let Ok(Some(StreamEvent::Frame(value))) =
+        tokio::time::timeout(Duration::from_secs(10), workspace.next()).await
+    {
+        let archived = DshClient::archived_ids(&value);
+        println!("archived ids = {:?}", archived);
+        println!(
+            "our session archived = {}",
+            archived.iter().any(|id| id == &session)
+        );
+    }
+    workspace.cancel();
 
     let after = client.list_sessions().await?;
     println!("list after  = {}（归档后应从列表消失）", after.len());

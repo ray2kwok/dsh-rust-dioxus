@@ -19,8 +19,8 @@ use dsh_runtime::DshClient;
 use dsh_state::SessionView;
 use dsh_transport::{Backoff, StreamEvent};
 use dsh_ui::{
-    AppShell, ApprovalItem, ConnectionState, FileEntry, MessageRow, QuestionCard, SendMode,
-    SessionSummary, Theme, TrajectoryRow,
+    AppShell, ApprovalItem, ConnectionState, FileEntry, MessageRow, QuestionCard, QueueItem,
+    SendMode, SessionSummary, Theme, TrajectoryRow,
 };
 use tokio::sync::mpsc;
 
@@ -65,7 +65,9 @@ fn main() {
 #[derive(Clone, Copy)]
 struct Ui {
     connection: Signal<ConnectionState>,
-    sessions: Signal<Vec<SessionSummary>>,
+    /// 全部会话（含已归档），渲染时再按 `archived` 过滤
+    all_sessions: Signal<Vec<SessionSummary>>,
+    archived: Signal<Vec<String>>,
     messages: Signal<Vec<MessageRow>>,
     trajectory: Signal<Vec<TrajectoryRow>>,
     files: Signal<Vec<FileEntry>>,
@@ -77,6 +79,8 @@ struct Ui {
     client: Signal<Option<Arc<DshClient>>>,
     approvals: Signal<Vec<ApprovalItem>>,
     questions: Signal<Vec<QuestionCard>>,
+    queue: Signal<Vec<QueueItem>>,
+    context_usage: Signal<Option<(u64, u64)>>,
     client_id: Signal<Option<String>>,
     running: Signal<bool>,
     send_mode: Signal<SendMode>,
@@ -101,7 +105,8 @@ fn App() -> Element {
 
     let mut ui = Ui {
         connection: use_signal(|| ConnectionState::Connecting),
-        sessions: use_signal(Vec::<SessionSummary>::new),
+        all_sessions: use_signal(Vec::<SessionSummary>::new),
+        archived: use_signal(Vec::<String>::new),
         messages: use_signal(Vec::<MessageRow>::new),
         trajectory: use_signal(Vec::<TrajectoryRow>::new),
         files: use_signal(Vec::<FileEntry>::new),
@@ -113,6 +118,8 @@ fn App() -> Element {
         client: use_signal(|| None::<Arc<DshClient>>),
         approvals: use_signal(Vec::<ApprovalItem>::new),
         questions: use_signal(Vec::<QuestionCard>::new),
+        queue: use_signal(Vec::<QueueItem>::new),
+        context_usage: use_signal(|| None::<(u64, u64)>),
         client_id: use_signal(|| None::<String>),
         running: use_signal(|| false),
         send_mode: use_signal(|| SendMode::Queue),
@@ -292,7 +299,20 @@ document.documentElement.style.colorScheme = dark ? 'dark' : 'light';"#
                 return;
             }
             if let Ok(list) = handle.list_sessions().await {
-                ui.sessions.set(list.iter().map(map::to_summary).collect());
+                // 归档信息来自 workspace/follow 的 baseline（session/list 不区分归档）
+                if let Ok(mut workspace) = handle.follow_workspace() {
+                    if let Ok(Some(StreamEvent::Frame(value))) =
+                        tokio::time::timeout(Duration::from_secs(5), workspace.next()).await
+                    {
+                        let archived = DshClient::archived_ids(&value);
+                        tracing::info!(count = archived.len(), "workspace baseline: 已归档会话");
+                        ui.archived.set(archived);
+                    }
+                    workspace.cancel();
+                }
+
+                ui.all_sessions
+                    .set(list.iter().map(map::to_summary).collect());
             }
         });
     };
@@ -313,7 +333,45 @@ document.documentElement.style.colorScheme = dark ? 'dark' : 'light';"#
             }
             // 以 Host 的列表为准，不做本地乐观删除（归档是否影响 list 尚未确认）
             if let Ok(list) = handle.list_sessions().await {
-                ui.sessions.set(list.iter().map(map::to_summary).collect());
+                // 归档信息来自 workspace/follow 的 baseline（session/list 不区分归档）
+                if let Ok(mut workspace) = handle.follow_workspace() {
+                    if let Ok(Some(StreamEvent::Frame(value))) =
+                        tokio::time::timeout(Duration::from_secs(5), workspace.next()).await
+                    {
+                        let archived = DshClient::archived_ids(&value);
+                        tracing::info!(count = archived.len(), "workspace baseline: 已归档会话");
+                        ui.archived.set(archived);
+                    }
+                    workspace.cancel();
+                }
+
+                ui.all_sessions
+                    .set(list.iter().map(map::to_summary).collect());
+            }
+        });
+    };
+
+    let on_queue_action = move |(item_id, steer): (String, bool)| {
+        let Some(handle) = ui.client.read().clone() else {
+            return;
+        };
+        let Some(session_id) = (ui.active)() else {
+            return;
+        };
+        // 乐观移除，失败时下次快照会纠正
+        ui.queue.write().retain(|item| item.id != item_id);
+        spawn(async move {
+            let result = if steer {
+                handle
+                    .steer_queued(session_id.clone(), item_id.clone())
+                    .await
+            } else {
+                handle
+                    .remove_queued(session_id.clone(), item_id.clone())
+                    .await
+            };
+            if let Err(err) = result {
+                tracing::warn!(%err, "队列操作失败");
             }
         });
     };
@@ -359,7 +417,13 @@ document.documentElement.style.colorScheme = dark ? 'dark' : 'light';"#
     rsx! {
         document::Style { "{APP_CSS}" }
         AppShell {
-            sessions: (ui.sessions)(),
+            sessions: {
+                let archived = (ui.archived)();
+                (ui.all_sessions)()
+                    .into_iter()
+                    .filter(|item| !archived.contains(&item.id))
+                    .collect::<Vec<_>>()
+            },
             active_id: (ui.active)(),
             active_title: (ui.active_title)(),
             messages: (ui.messages)(),
@@ -369,6 +433,8 @@ document.documentElement.style.colorScheme = dark ? 'dark' : 'light';"#
             connection: (ui.connection)(),
             approvals: (ui.approvals)(),
             questions: (ui.questions)(),
+            queue: (ui.queue)(),
+            context_usage: (ui.context_usage)(),
             running: (ui.running)(),
             send_mode: (ui.send_mode)(),
             theme: (ui.theme)(),
@@ -378,6 +444,7 @@ document.documentElement.style.colorScheme = dark ? 'dark' : 'light';"#
             on_send,
             on_decide,
             on_answer,
+            on_queue_action,
             on_rename,
             on_archive,
             on_cancel,
@@ -467,8 +534,25 @@ async fn bootstrap(mut ui: Ui) -> Result<mpsc::Receiver<()>, dsh_transport::Tran
         }
     }
 
-    ui.sessions.set(list.iter().map(map::to_summary).collect());
-    if let Some(first) = list.first() {
+    // 归档信息来自 workspace/follow 的 baseline（session/list 不区分归档）
+    if let Ok(mut workspace) = handle.follow_workspace() {
+        if let Ok(Some(StreamEvent::Frame(value))) =
+            tokio::time::timeout(Duration::from_secs(5), workspace.next()).await
+        {
+            let archived = DshClient::archived_ids(&value);
+            tracing::info!(count = archived.len(), "workspace baseline: 已归档会话");
+            ui.archived.set(archived);
+        }
+        workspace.cancel();
+    }
+
+    ui.all_sessions
+        .set(list.iter().map(map::to_summary).collect());
+    let archived_now = (ui.archived)();
+    let first_visible = list
+        .iter()
+        .find(|item| !archived_now.contains(&item.session_id.as_str().to_string()));
+    if let Some(first) = first_visible {
         let session_id = first.session_id.as_str().to_string();
         ui.active.set(Some(session_id.clone()));
         spawn_follow(Arc::clone(&handle), session_id.clone(), ui);
@@ -529,6 +613,8 @@ fn spawn_follow(handle: Arc<DshClient>, session_id: String, ui: Ui) {
     let mut trajectory = ui.trajectory;
     let mut running = ui.running;
     let mut active_title = ui.active_title;
+    let mut queue = ui.queue;
+    let mut context_usage = ui.context_usage;
 
     spawn(async move {
         let Ok(mut stream) = handle.follow(session_id) else {
@@ -549,22 +635,22 @@ fn spawn_follow(handle: Arc<DshClient>, session_id: String, ui: Ui) {
                     if !announced {
                         announced = true;
                         tracing::info!(entries = view.len(), cursor = view.cursor, "follow 已就绪");
-                        if let Some(header) = &view.header
-                            && let Some(cwd) = &header.cwd
-                        {
-                            active_title.set(
-                                cwd.rsplit('/')
-                                    .find(|seg| !seg.is_empty())
-                                    .unwrap_or("会话")
-                                    .to_string(),
-                            );
-                        }
+                        let fallback = view
+                            .header
+                            .as_ref()
+                            .and_then(|header| header.cwd.as_deref())
+                            .and_then(|cwd| cwd.rsplit('/').find(|seg| !seg.is_empty()))
+                            .unwrap_or("会话")
+                            .to_string();
+                        active_title.set(map::title(&view).unwrap_or(fallback));
                     }
 
                     running.set(view.live.is_some());
                     if last_flush.elapsed() >= Duration::from_millis(50) {
                         messages.set(map::rows(&view));
                         trajectory.set(map::trajectory(&view));
+                        queue.set(map::queue_items(&view));
+                        context_usage.set(map::context_usage(&view));
                         last_flush = Instant::now();
                     }
                 }

@@ -184,3 +184,10 @@ pub struct QuestionCard {
     pub call_id: String,
     pub items: Vec<QuestionItemView>,
 }
+
+/// 一条待发消息（来自 `inbox` projection）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct QueueItem {
+    pub id: String,
+    pub text: String,
+}

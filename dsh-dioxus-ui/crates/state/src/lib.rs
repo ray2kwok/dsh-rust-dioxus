@@ -186,6 +186,14 @@ impl SessionView {
         }
     }
 
+    /// 读一条 projection（`snapshot.projections.values[key]`）。
+    ///
+    /// 上游的 projection 是 `SessionProjectionBaseline.values` 里的扁平 map，
+    /// 键由各插件注册（`title` / `inbox` / `contextPressure` / `sessionStats` …）。
+    pub fn projection(&self, key: &str) -> Option<&Value> {
+        self.projections.get(key)
+    }
+
     /// 已归约的事件数。
     pub fn len(&self) -> usize {
         self.entries.len()

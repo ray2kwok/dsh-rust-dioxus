@@ -6,8 +6,8 @@ use crate::conversation::ConversationView;
 use crate::i18n::{self, Key, Locale, use_t};
 use crate::icons::Icon;
 use crate::model::{
-    ApprovalItem, ConnectionState, FileEntry, MessageRow, QuestionCard, SendMode, SessionSummary,
-    Theme, TrajectoryRow,
+    ApprovalItem, ConnectionState, FileEntry, MessageRow, QuestionCard, QueueItem, SendMode,
+    SessionSummary, Theme, TrajectoryRow,
 };
 use crate::sidebar::SessionList;
 
@@ -37,6 +37,9 @@ pub fn AppShell(
     )>,
     #[props(default = EventHandler::new(|_| {}))] on_rename: EventHandler<String>,
     #[props(default = EventHandler::new(|_| {}))] on_archive: EventHandler<()>,
+    #[props(default = Vec::new())] queue: Vec<QueueItem>,
+    #[props(default = None)] context_usage: Option<(u64, u64)>,
+    #[props(default = EventHandler::new(|_| {}))] on_queue_action: EventHandler<(String, bool)>,
     #[props(default = EventHandler::new(|_| {}))] on_decide: EventHandler<(String, bool)>,
     #[props(default = EventHandler::new(|_| {}))] on_mode: EventHandler<SendMode>,
     #[props(default = EventHandler::new(|_| {}))] on_cancel: EventHandler<()>,
@@ -85,6 +88,9 @@ pub fn AppShell(
                     connection,
                     approvals,
                     questions,
+                    queue,
+                    context_usage,
+                    on_queue_action,
                     on_answer,
                     on_rename,
                     on_archive,

@@ -7,8 +7,8 @@
 use dsh_proto::session::{SessionSummary as WireSummary, SessionWireEvent};
 use dsh_state::SessionView;
 use dsh_ui::{
-    ApprovalItem, MessageRow, QuestionCard, QuestionItemView, Role, SessionStatus, SessionSummary,
-    TrajectoryRow,
+    ApprovalItem, MessageRow, QuestionCard, QuestionItemView, QueueItem, Role, SessionStatus,
+    SessionSummary, TrajectoryRow,
 };
 use serde_json::Value;
 
@@ -249,6 +249,62 @@ pub fn trajectory(view: &SessionView) -> Vec<TrajectoryRow> {
             detail: truncate(&event.data.to_string(), 120),
         })
         .collect()
+}
+
+/// 会话标题（来自 `title` projection；未设置时返回 None）。
+pub fn title(view: &SessionView) -> Option<String> {
+    view.projection("title")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+/// 待发消息（来自 `inbox` projection 的 `next-turn` 数组）。
+///
+/// 条目形状上游未固定导出，这里兼容 `{id, text}` / `{id, content:[{text}]}` / 纯字符串。
+pub fn queue_items(view: &SessionView) -> Vec<QueueItem> {
+    let Some(inbox) = view.projection("inbox") else {
+        return Vec::new();
+    };
+    let Some(list) = inbox.get("next-turn").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+
+    list.iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let id = entry
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("q-{index}"));
+            let text = entry
+                .get("text")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| {
+                    entry.get("content").and_then(Value::as_array).map(|parts| {
+                        parts
+                            .iter()
+                            .filter_map(|part| part.get("text").and_then(Value::as_str))
+                            .collect::<Vec<_>>()
+                            .join("")
+                    })
+                })
+                .or_else(|| entry.as_str().map(str::to_string))
+                .unwrap_or_default();
+            QueueItem { id, text }
+        })
+        .collect()
+}
+
+/// 上下文占用（`contextPressure`）：返回 `(surfaceTokens, contextWindow)`。
+pub fn context_usage(view: &SessionView) -> Option<(u64, u64)> {
+    let pressure = view.projection("contextPressure")?;
+    let surface = pressure.get("surfaceTokens")?.as_u64()?;
+    let window = pressure.get("contextWindow").and_then(Value::as_u64)?;
+    (window > 0).then_some((surface, window))
 }
 
 #[cfg(test)]
