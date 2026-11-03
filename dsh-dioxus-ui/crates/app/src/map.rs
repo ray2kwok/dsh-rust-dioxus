@@ -6,18 +6,14 @@
 
 use dsh_proto::session::{SessionSummary as WireSummary, SessionWireEvent};
 use dsh_state::SessionView;
-use dsh_ui::{MessageRow, Role, SessionStatus, SessionSummary};
+use dsh_ui::{ApprovalItem, MessageRow, Role, SessionStatus, SessionSummary, TrajectoryRow};
 use serde_json::Value;
 
 /// 会话摘要 → 列表项。
 pub fn to_summary(wire: &WireSummary) -> SessionSummary {
-    // Host 不返回标题；先用 cwd 的末段，M3 接 projections 里的标题。
-    let title = wire
-        .cwd
-        .as_deref()
-        .and_then(|cwd| cwd.rsplit('/').find(|seg| !seg.is_empty()))
-        .map(str::to_string)
-        .unwrap_or_else(|| short_id(wire.session_id.as_str()));
+    // Host 的列表里没有标题（标题来自 projections/rename）；先用短 id 占位，
+    // 避免与左侧的「工作区名」重复。
+    let title = format!("会话 {}", short_id(wire.session_id.as_str()));
 
     // M0 只有「运行中/空闲」两态；等待审批需要 api-session/status 事件，M2 接入
     let status = if wire.running {
@@ -29,9 +25,34 @@ pub fn to_summary(wire: &WireSummary) -> SessionSummary {
     SessionSummary {
         id: wire.session_id.as_str().to_string(),
         title,
-        workspace: wire.cwd.clone().unwrap_or_else(|| "未分组".to_string()),
+        // 用目录名而不是完整路径，避免侧栏被长路径撑开
+        workspace: wire
+            .cwd
+            .as_deref()
+            .and_then(|cwd| cwd.rsplit('/').find(|seg| !seg.is_empty()))
+            .map(str::to_string)
+            .unwrap_or_else(|| "未分组".to_string()),
         status,
         updated: format_time(wire.updated_at),
+    }
+}
+
+/// `approval/request` waterfall → 审批卡片。
+///
+/// `request` 的具体形状由发起方决定（工具名、参数、理由…），这里只做
+/// 「尽量取名字、其余原样展示」，不猜测结构。
+pub fn approval(event_id: String, agent_id: String, request: &Value) -> ApprovalItem {
+    let tool = request
+        .get("tool")
+        .or_else(|| request.get("toolName"))
+        .and_then(Value::as_str)
+        .unwrap_or("工具");
+
+    ApprovalItem {
+        event_id,
+        agent_id,
+        title: format!("{tool} 请求执行"),
+        detail: truncate(&request.to_string(), 400),
     }
 }
 
@@ -155,6 +176,18 @@ fn format_time(ms: u64) -> String {
         3600..=86399 => format!("{} 小时前", diff / 3600),
         _ => format!("{} 天前", diff / 86400),
     }
+}
+
+/// 会话视图 → 轨迹行（原始事件类型 + 数据预览）。
+pub fn trajectory(view: &SessionView) -> Vec<TrajectoryRow> {
+    view.entries
+        .iter()
+        .map(|event| TrajectoryRow {
+            seq: event.seq,
+            kind: event.kind.clone(),
+            detail: truncate(&event.data.to_string(), 120),
+        })
+        .collect()
 }
 
 #[cfg(test)]

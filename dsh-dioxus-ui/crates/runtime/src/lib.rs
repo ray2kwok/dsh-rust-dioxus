@@ -12,8 +12,11 @@
 
 use std::time::Duration;
 
-use dsh_proto::endpoint::{API_PREFIX, session as session_ep};
-use dsh_proto::events::{REMOTE_EVENT_STREAM_ENDPOINT, RemoteEventFrame};
+use dsh_proto::endpoint::{API_PREFIX, files as files_ep, session as session_ep};
+use dsh_proto::events::{
+    ApprovalOutcome, EventOutcome, REMOTE_EVENT_RESULT_ENDPOINT, REMOTE_EVENT_STREAM_ENDPOINT,
+    RemoteEventFrame, RemoteEventResult,
+};
 use dsh_proto::session::{
     PromptContent, PromptMode, SessionCreateRequest, SessionCreateValue, SessionFollowFrame,
     SessionListValue, SessionPromptRequest, SessionPromptValue, SessionSummary,
@@ -86,16 +89,29 @@ impl DshClient {
             .ok_or_else(|| TransportError::Protocol("session/create 未返回结果".into()))
     }
 
-    /// 发送一条文本消息。
+    /// 发送一条文本消息（默认排队）。
     pub async fn prompt(
         &self,
         session_id: impl Into<String>,
         text: impl Into<String>,
     ) -> Result<(), TransportError> {
+        self.prompt_with_mode(session_id, text, PromptMode::Queue)
+            .await
+    }
+
+    /// 发送一条文本消息，显式指定 `queue` 或 `steer`。
+    ///
+    /// `steer` 会打断当前 turn 并插入，界面上体现为「插话」。
+    pub async fn prompt_with_mode(
+        &self,
+        session_id: impl Into<String>,
+        text: impl Into<String>,
+        mode: PromptMode,
+    ) -> Result<(), TransportError> {
         let request = SessionPromptRequest {
             request_id: uuid::Uuid::new_v4().to_string(),
             session_id: dsh_proto::session::SessionId::new(session_id),
-            mode: PromptMode::Queue,
+            mode,
             content: vec![PromptContent::text(text)],
             client_time_zone: None,
         };
@@ -184,6 +200,38 @@ impl DshClient {
         }
     }
 
+    /// 应答一个 waterfall（审批/提问）。
+    ///
+    /// 注意 `$events/result` 的 `args` 是平铺的 `{clientId, eventId, outcome}`，
+    /// 没有 `request` 外壳；`clientId` 必须用当前 generation 的（重连后旧 id 失效）。
+    pub async fn respond_event(
+        &self,
+        client_id: impl Into<String>,
+        event_id: impl Into<String>,
+        outcome: EventOutcome,
+    ) -> Result<(), TransportError> {
+        let result = RemoteEventResult::new(client_id, event_id, outcome);
+        self.rpc
+            .call_value(REMOTE_EVENT_RESULT_ENDPOINT, serde_json::to_value(result)?)
+            .await
+            .map(|_| ())
+    }
+
+    /// 审批快捷方法：`allowed-once` / `rejected`。
+    pub async fn answer_approval(
+        &self,
+        client_id: impl Into<String>,
+        event_id: impl Into<String>,
+        allow: bool,
+    ) -> Result<(), TransportError> {
+        let outcome = EventOutcome::approval(if allow {
+            ApprovalOutcome::AllowedOnce
+        } else {
+            ApprovalOutcome::Rejected
+        });
+        self.respond_event(client_id, event_id, outcome).await
+    }
+
     /// 关闭 Host 子进程。
     pub async fn shutdown(self) {
         self.host.shutdown().await;
@@ -199,11 +247,133 @@ impl DshClient {
 mod tests {
     use super::*;
 
+    /// 审批回执的线上形状（`$events/result` 的 args 是平铺字段）。
+    #[test]
+    fn approval_result_shape() {
+        let result = RemoteEventResult::new(
+            "client-1",
+            "ev-1",
+            EventOutcome::approval(ApprovalOutcome::AllowedOnce),
+        );
+        assert_eq!(
+            serde_json::to_value(result).unwrap(),
+            json!({
+                "clientId": "client-1",
+                "eventId": "ev-1",
+                "outcome": { "kind": "result", "value": "allowed-once" }
+            })
+        );
+    }
+
     /// 只验证 args 形状，不触网。
     #[test]
     fn list_args_use_request_underscore() {
         let args = json!({ "_request": {} });
         assert!(args.get("_request").is_some());
         assert!(args.get("request").is_none(), "写错键名会被 gateway 拒绝");
+    }
+}
+
+/// 文件树的一项。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileItem {
+    pub path: String,
+    pub name: String,
+    pub is_dir: bool,
+}
+
+impl DshClient {
+    /// 列目录。`scope_id` 线上叫 `workspaceFileScopeId`（值就是 sessionId）。
+    ///
+    /// 返回结构上游未在文档里固定，这里做宽容解析：支持数组或 `{items:[…]}`，
+    /// 目录判定兼容 `isDir` / `type` / `kind` 三种写法。
+    pub async fn list_files(
+        &self,
+        scope_id: &str,
+        path: &str,
+    ) -> Result<Vec<FileItem>, TransportError> {
+        let value = self
+            .rpc
+            .call_value(
+                files_ep::LIST,
+                json!({ "workspaceFileScopeId": scope_id, "path": path }),
+            )
+            .await?;
+
+        let Some(value) = value else {
+            return Ok(Vec::new());
+        };
+
+        let array = value
+            .get("items")
+            .and_then(serde_json::Value::as_array)
+            .or_else(|| value.get("entries").and_then(serde_json::Value::as_array))
+            .or_else(|| value.as_array());
+
+        let Some(array) = array else {
+            return Ok(Vec::new());
+        };
+
+        Ok(array
+            .iter()
+            .filter_map(|entry| {
+                let path = entry
+                    .get("path")
+                    .or_else(|| entry.get("name"))
+                    .and_then(serde_json::Value::as_str)?;
+                let name = entry
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_else(|| path.rsplit('/').next().unwrap_or(path));
+                let is_dir = entry
+                    .get("isDir")
+                    .and_then(serde_json::Value::as_bool)
+                    .or_else(|| {
+                        entry
+                            .get("isDirectory")
+                            .and_then(serde_json::Value::as_bool)
+                    })
+                    .unwrap_or_else(|| {
+                        matches!(
+                            entry
+                                .get("type")
+                                .or_else(|| entry.get("kind"))
+                                .and_then(serde_json::Value::as_str),
+                            Some("directory") | Some("dir") | Some("folder")
+                        )
+                    });
+
+                Some(FileItem {
+                    path: path.to_string(),
+                    name: name.to_string(),
+                    is_dir,
+                })
+            })
+            .collect())
+    }
+
+    /// 读取文本文件（预览用）。
+    pub async fn read_file(&self, scope_id: &str, path: &str) -> Result<String, TransportError> {
+        let value = self
+            .rpc
+            .call_value(
+                files_ep::READ,
+                json!({ "workspaceFileScopeId": scope_id, "path": path }),
+            )
+            .await?;
+
+        let Some(value) = value else {
+            return Ok(String::new());
+        };
+
+        if let Some(text) = value.as_str() {
+            return Ok(text.to_string());
+        }
+        for key in ["text", "content", "data"] {
+            if let Some(text) = value.get(key).and_then(serde_json::Value::as_str) {
+                return Ok(text.to_string());
+            }
+        }
+        Ok(value.to_string())
     }
 }

@@ -487,7 +487,13 @@ KaTeX 说明：`katex`/`ratex` crate 均不成熟（前者是 JS 绑定，后者
 
 ## 12. 样式与主题
 
-- **token 复用**：直接搬上游 `packages/client/ui-theme/src/styles/` 的 `--dsw-*` 变量与全局表（base / corner-shape / focus / scrollbar / shiki / brand-font）。纯 CSS，零运行时。
+- **token 复用（已落地）**：把上游 `packages/client/ui-theme/src/styles/` 的
+  `base.css`、`design-platform.css`、`scrollbar.css`、`focus.css`、`corner-shape.css`
+  **原样拷进** `crates/app/assets/theme/`，组件样式只写 `var(--dsw-alias-*)`。
+  于是配色、圆角刻度、字体栈、滚动条、焦点环与上游 Web UI 完全同源。
+- **必须内联，不能用 `asset!` + `<link>`**：debug 构建下 `asset!` 返回的是绝对文件路径，
+  WebView 取不到，表现是**整页无样式**（我们踩过）。改用
+  `concat!(include_str!(...))` + `document::Style`，编译期拼进二进制，产物仍是单文件。
 - **组件样式**：优先复用上游同名 CSS（转成全局 CSS + 前缀类名，避免 CSS Modules 工具链依赖）；无法直接复用的少数动态样式用 `style:` 内联。
 - **主题落地**（唯一写入点）：
 
@@ -653,6 +659,11 @@ dx build --platform desktop --release
 
 `scripts/dev-host.sh` 把上述步骤封装成一条命令（`DSH_REPO` 可覆盖仓库路径）。
 
+- **实测产物**：`cargo build --release -p dsh-app` → 4.7 MB（`opt-level="z"` + `lto="fat"` + strip），
+  远低于 40 MB 预算；依赖系统 WebView，不打包浏览器内核。
+- **冒烟**：`scripts/smoke.sh` 用日志断言启动链路（握手 → generation → 列表 → 快照），
+  可在无截图环境下当回归门禁。
+
 - 资源（CSS/字体/词典）经 `asset!` 内嵌或随包分发，运行时无外部文件依赖。
 - 运行前提：目标机已安装 `dsh`（Node ≥ 24.9）；未安装时走引导页。
 - 回滚：应用与 Host 解耦，换回上游前端只需让用户用浏览器打开 Host 地址，无需改 Host。
@@ -662,13 +673,20 @@ dx build --platform desktop --release
 
 ## 19. 实施计划
 
-> **进度（2026-11-03）**：
-> - M0-1 ~ M0-5 完成并通过真实 Host 验证（握手 → `session/list` → `session/create`
->   → `session/follow` → `SessionView` → 渲染）；
-> - M1 完成：Markdown 解析与渲染（`dsh-render` + `MarkdownView`）、diff 行解析、
->   代码高亮（零依赖扫描器，见 `dsh-render::highlight`）、通用工具卡、流式合批节流；
-> - 断线自动重连已实现并实测（杀掉 Host → 500ms 退避 → 新 Host → generation+1）。
-> 下一步 M2：审批 / 提问 / 队列 / steer 的交互闭环。
+> **进度（2026-11-03）**
+>
+> | 阶段 | 状态 | 说明 |
+> | --- | --- | --- |
+> | M0 打通 | ✅ | 握手 → list → create → follow → `SessionView` → 渲染，全部对真实 Host 验证 |
+> | M1 渲染 | ✅ | Markdown、diff 解析、零依赖高亮、通用工具卡、流式合批 |
+> | M2 交互 | ◐ | 审批闭环 + `$events/result` 已通（含幂等实测）；`steer` 模式已通；**待做**：ask-question、队列管理 |
+> | M3 可用 | ◐ | 三栏 + 主题切换 + 设置面板 + 轨迹视图；视觉对齐上游 token（配色/圆角/字体/滚动条）；
+> 图标已改用上游 `artwork.ts` 的真实 SVG 几何（内联，无 sprite）；
+> **待做**：i18n（当前仅中文）、会话重命名/归档 |
+> | M4 完整 | ◐ | 右栏文件树 + 文本预览可用；**待做**：Trajectory 的用量/耗时聚合、附件与 @ 引用 |
+> | M5 打磨 | ◐ | 消息渲染窗口化（最近 300 条）+ release 4.7MB + 冒烟脚本；**待做**：真虚拟列表、内存曲线 |
+>
+> 已实测的健壮性：杀掉 Host → 500ms 退避 → 新 Host → generation+1；手动重连按钮同样走这条路径。
 
 | 阶段 | 交付 | 关键文件 |
 | --- | --- | --- |
@@ -712,6 +730,7 @@ dx build --platform desktop --release
 - `/connect?interactions=answer` 的 cookie 可用于一元 `/api/*` ✅
 - `session/list` 的 `args` 必须是 `{"_request":{}}` ✅
 - `$events` 首帧 `ready`（含 `clientId`/`host.home`）可解析 ✅
+- `$events/result` 的字段形状被接受；Host 对不存在的 `eventId` 也返回成功（幂等）✅
 
 **仍开放**：
 

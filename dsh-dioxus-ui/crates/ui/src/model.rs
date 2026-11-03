@@ -1,30 +1,20 @@
-//! 视图层的数据模型。
-//!
-//! 刻意与 `dsh-proto` 的 wire 类型分开：协议类型描述「Host 说什么」，
-//! 这里的类型描述「界面需要什么」。中间由 `dsh-state` 负责转换，
-//! 因此协议演进（新增事件类型）不会直接冲击组件。
+//! 视图层的数据模型（与 wire 类型解耦）。
 
 /// 会话的展示摘要。
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionSummary {
     pub id: String,
     pub title: String,
-    /// 所属工作区名（用于分组）。
     pub workspace: String,
     pub status: SessionStatus,
-    /// 已格式化的相对时间，例如「3 分钟前」。
     pub updated: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionStatus {
-    /// 空闲，可发送。
     Idle,
-    /// 正在跑 turn。
     Running,
-    /// 等待用户审批/回答。
     Waiting,
-    /// 出错。
     Error,
 }
 
@@ -66,15 +56,6 @@ impl Role {
             Role::Tool => "工具",
         }
     }
-
-    pub fn css_class(self) -> &'static str {
-        match self {
-            Role::User => "msg msg--user",
-            Role::Assistant => "msg msg--assistant",
-            Role::System => "msg msg--system",
-            Role::Tool => "msg msg--tool",
-        }
-    }
 }
 
 /// 一条可渲染的消息。
@@ -83,9 +64,7 @@ pub struct MessageRow {
     pub id: String,
     pub role: Role,
     pub text: String,
-    /// 是否仍在流式输出（用于显示光标/动画）。
     pub streaming: bool,
-    /// 工具卡标题（`Role::Tool` 时使用）。
     pub tool_name: Option<String>,
 }
 
@@ -111,7 +90,7 @@ impl MessageRow {
     }
 }
 
-/// 连接状态（显示在顶栏）。
+/// 连接状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {
     Disconnected,
@@ -135,4 +114,89 @@ impl ConnectionState {
             ConnectionState::Connected => "badge badge--ok",
         }
     }
+}
+
+/// 一条待处理的审批请求。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApprovalItem {
+    pub event_id: String,
+    pub agent_id: String,
+    pub title: String,
+    pub detail: String,
+}
+
+/// 发送模式（协议里的 `queue` / `steer`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendMode {
+    Queue,
+    Steer,
+}
+
+impl SendMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            SendMode::Queue => "排队",
+            SendMode::Steer => "插话",
+        }
+    }
+
+    pub fn css_class(self, active: bool) -> &'static str {
+        match (self, active) {
+            (SendMode::Queue, true) => "seg seg--active",
+            (SendMode::Queue, false) => "seg",
+            (SendMode::Steer, true) => "seg seg--active seg--steer",
+            (SendMode::Steer, false) => "seg seg--steer",
+        }
+    }
+}
+
+/// 主题偏好。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Theme {
+    Light,
+    Dark,
+    System,
+}
+
+impl Theme {
+    pub fn label(self) -> &'static str {
+        match self {
+            Theme::Light => "浅色",
+            Theme::Dark => "深色",
+            Theme::System => "跟随系统",
+        }
+    }
+
+    /// 写入 `<html data-theme>` 的值；`system` 交给 CSS 媒体查询。
+    pub fn attribute(self) -> &'static str {
+        match self {
+            Theme::Light => "light",
+            Theme::Dark => "dark",
+            Theme::System => "system",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Theme::Light => Theme::Dark,
+            Theme::Dark => Theme::System,
+            Theme::System => Theme::Light,
+        }
+    }
+}
+
+/// Trajectory 视图的一行（原始事件的轻量展示）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrajectoryRow {
+    pub seq: u64,
+    pub kind: String,
+    pub detail: String,
+}
+
+/// 右栏文件树的一项。
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileEntry {
+    pub path: String,
+    pub name: String,
+    pub is_dir: bool,
 }

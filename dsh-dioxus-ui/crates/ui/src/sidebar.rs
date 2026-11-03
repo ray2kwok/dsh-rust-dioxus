@@ -5,6 +5,7 @@
 
 use dioxus::prelude::*;
 
+use crate::icons::Icon;
 use crate::model::SessionSummary;
 
 #[component]
@@ -27,7 +28,10 @@ pub fn SessionList(
 
     rsx! {
         nav { class: "session-list",
-            button { class: "primary-btn", "＋ 新建会话" }
+            button { class: "primary-btn primary-btn--block",
+                Icon { glyph: "new-chat-outline".to_string() }
+                span { "新建会话" }
+            }
             for (workspace, items) in groups {
                 div { class: "group",
                     div { class: "group__title", "{workspace}" }

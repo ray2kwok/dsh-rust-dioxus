@@ -1,32 +1,43 @@
-//! 三栏骨架：Sidebar / Main / RightBar。
-//!
-//! 对应上游 `ui-layout` 的 `AppFrame`（264–420px 侧栏、可折叠、右栏可关）。
-//! 本阶段固定宽度 + 折叠开关，拖拽调宽留到 M3。
+//! 三栏骨架：Sidebar / Main / RightBar + 设置浮层 + 状态栏。
 
 use dioxus::prelude::*;
 
 use crate::conversation::ConversationView;
-use crate::model::{ConnectionState, MessageRow, SessionSummary};
+use crate::icons::Icon;
+use crate::model::{
+    ApprovalItem, ConnectionState, FileEntry, MessageRow, SendMode, SessionSummary, Theme,
+    TrajectoryRow,
+};
 use crate::sidebar::SessionList;
 
-/// 三栏外壳。数据全部由外部传入，组件自身不持有业务状态。
 #[component]
 pub fn AppShell(
     sessions: Vec<SessionSummary>,
     active_id: Option<String>,
     messages: Vec<MessageRow>,
     connection: ConnectionState,
-    /// 连接代次（`$events` ready 后的计数），M0 阶段显示在状态栏。
-    #[props(default = 0)]
-    generation: u64,
-    /// 状态栏里的 Host 地址。
-    #[props(default = String::new())]
-    host_label: String,
+    #[props(default = Vec::new())] approvals: Vec<ApprovalItem>,
+    #[props(default = Vec::new())] trajectory: Vec<TrajectoryRow>,
+    #[props(default = Vec::new())] files: Vec<FileEntry>,
+    #[props(default = None)] preview: Option<String>,
+    #[props(default = 0)] generation: u64,
+    #[props(default = String::new())] host_label: String,
+    #[props(default = String::new())] active_title: String,
+    #[props(default = false)] running: bool,
+    #[props(default = SendMode::Queue)] send_mode: SendMode,
+    #[props(default = Theme::System)] theme: Theme,
+    #[props(default = EventHandler::new(|_| {}))] on_theme: EventHandler<Theme>,
+    #[props(default = EventHandler::new(|_| {}))] on_decide: EventHandler<(String, bool)>,
+    #[props(default = EventHandler::new(|_| {}))] on_mode: EventHandler<SendMode>,
+    #[props(default = EventHandler::new(|_| {}))] on_cancel: EventHandler<()>,
+    #[props(default = EventHandler::new(|_| {}))] on_reconnect: EventHandler<()>,
+    #[props(default = EventHandler::new(|_| {}))] on_open_file: EventHandler<String>,
     on_select: EventHandler<String>,
     on_send: EventHandler<String>,
 ) -> Element {
     let mut collapsed = use_signal(|| false);
     let mut show_right = use_signal(|| false);
+    let mut show_settings = use_signal(|| false);
 
     let shell_class = if collapsed() {
         "shell shell--collapsed"
@@ -43,7 +54,7 @@ pub fn AppShell(
                         class: "icon-btn",
                         title: if collapsed() { "展开侧栏" } else { "收起侧栏" },
                         onclick: move |_| collapsed.toggle(),
-                        if collapsed() { "»" } else { "«" }
+                        Icon { glyph: "panel-left-outline".to_string() }
                     }
                 }
                 if !collapsed() {
@@ -58,8 +69,16 @@ pub fn AppShell(
             main { class: "main",
                 ConversationView {
                     active_id: active_id.clone(),
+                    title: if active_title.is_empty() { "会话".to_string() } else { active_title.clone() },
                     messages,
                     connection,
+                    approvals,
+                    trajectory,
+                    running,
+                    send_mode,
+                    on_mode,
+                    on_cancel,
+                    on_decide,
                     on_send,
                     on_toggle_right: move |_| show_right.toggle(),
                 }
@@ -69,13 +88,84 @@ pub fn AppShell(
                 aside { class: "rightbar",
                     div { class: "rightbar__head",
                         span { "文件" }
+                        span { class: "spacer" }
                         button {
                             class: "icon-btn",
                             onclick: move |_| show_right.set(false),
-                            "×"
+                            Icon { glyph: "close-outline".to_string() }
                         }
                     }
-                    div { class: "rightbar__body muted", "文件树 / 文档预览（M4）" }
+                    div { class: "rightbar__body",
+                        if files.is_empty() {
+                            div { class: "muted", "目录为空或尚未加载。" }
+                        }
+                        for entry in files.iter() {
+                            {
+                                let path = entry.path.clone();
+                                rsx! {
+                                    button {
+                                        key: "{entry.path}",
+                                        class: "file-row",
+                                        onclick: move |_| on_open_file.call(path.clone()),
+                                        span { class: "file-icon",
+                                            if entry.is_dir {
+                                                Icon { glyph: "chevron-right-outline".to_string(), size: 12.0 }
+                                            } else {
+                                                Icon { glyph: "chevron-right-outline".to_string(), size: 12.0 }
+                                            }
+                                        }
+                                        span { class: "file-name", "{entry.name}" }
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(text) = preview.clone() {
+                            div { class: "preview",
+                                div { class: "preview__head muted", "预览" }
+                                pre { class: "preview__body", "{text}" }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if show_settings() {
+            div { class: "modal-backdrop", onclick: move |_| show_settings.set(false),
+                div { class: "modal", onclick: move |evt| evt.stop_propagation(),
+                    h3 { class: "modal__title", "设置" }
+                    div { class: "modal__row",
+                        span { class: "modal__label", "主题" }
+                        button {
+                            class: "ghost-btn",
+                            onclick: move |_| on_theme.call(theme.next()),
+                            "{theme.label()}"
+                        }
+                    }
+                    div { class: "modal__row",
+                        span { class: "modal__label", "Host" }
+                        span { class: "muted mono", "{host_label}" }
+                    }
+                    div { class: "modal__row",
+                        span { class: "modal__label", "连接代次" }
+                        span { class: "muted", "{generation}" }
+                    }
+                    div { class: "modal__row",
+                        span { class: "modal__label", "会话数" }
+                        span { class: "muted", "{sessions.len()}" }
+                    }
+                    div { class: "modal__actions",
+                        button {
+                            class: "ghost-btn",
+                            onclick: move |_| on_reconnect.call(()),
+                            "重新连接"
+                        }
+                        button {
+                            class: "primary-btn",
+                            onclick: move |_| show_settings.set(false),
+                            "关闭"
+                        }
+                    }
                 }
             }
         }
@@ -85,7 +175,12 @@ pub fn AppShell(
             span { class: "muted", "{host_label}" }
             span { class: "spacer" }
             span { class: "muted", "generation #{generation}" }
-            span { class: "muted", "dsh-dioxus-ui" }
+            button {
+                class: "icon-btn",
+                title: "设置",
+                onclick: move |_| show_settings.set(true),
+                Icon { glyph: "settings-outline".to_string() }
+            }
         }
     }
 }
