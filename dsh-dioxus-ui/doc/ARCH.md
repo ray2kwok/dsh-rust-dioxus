@@ -708,9 +708,10 @@ dx build --platform desktop --release
 > | M3 可用 | ◐ | 三栏 + 主题切换 + 设置面板 + 轨迹视图；视觉对齐上游 token（配色/圆角/字体/滚动条）；
 > 图标已改用上游 `artwork.ts` 的真实 SVG 几何（内联，无 sprite）；
 > 会话重命名/归档、ask-question（选项 + 自定义回答）、i18n（zh/en，键为枚举）已接通；
-> 队列（`session/updateQueue` + `inbox` projection）、消息分页、上下文占用（`contextPressure`）、
-> 标题（`title` projection）、归档过滤（`workspace/follow` 的 `archivedSessionIds`）均已接通。
-> **待做**：完整 i18n 字典（仅界面 chrome） |
+> 队列（`session/updateQueue` + `inbox` projection）、**历史分页（`session/page`）**、
+> 上下文占用（`contextPressure`）、标题（`title` projection）、
+> 归档过滤（`workspace/follow` 的 `archivedSessionIds`）、新建会话、diff 卡片均已接通。
+> **待做**：完整 i18n 字典（目前仅界面 chrome，未从 `locales.ts` 全量抽取） |
 > | M4 完整 | ◐ | 右栏文件树 + 文本预览可用；**待做**：Trajectory 的用量/耗时聚合、附件与 @ 引用 |
 > | M5 打磨 | ◐ | 消息渲染窗口化（最近 300 条）+ release 4.7MB + 冒烟脚本；**待做**：真虚拟列表、内存曲线 |
 >

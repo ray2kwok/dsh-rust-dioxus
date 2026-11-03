@@ -12,6 +12,6 @@ pub mod diff;
 pub mod highlight;
 pub mod markdown;
 
-pub use diff::{DiffKind, DiffRow, rows as diff_rows, stats as diff_stats};
+pub use diff::{DiffKind, DiffRow, parse_unified, rows as diff_rows, stats as diff_stats};
 pub use highlight::{Span, Token, highlight};
 pub use markdown::{Block, Document, Inline, parse as parse_markdown};

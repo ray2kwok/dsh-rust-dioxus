@@ -14,6 +14,7 @@ pub fn SessionList(
     sessions: Vec<SessionSummary>,
     active_id: Option<String>,
     on_select: EventHandler<String>,
+    #[props(default = EventHandler::new(|_| {}))] on_new: EventHandler<()>,
 ) -> Element {
     let t = use_t();
 
@@ -31,7 +32,9 @@ pub fn SessionList(
 
     rsx! {
         nav { class: "session-list",
-            button { class: "primary-btn primary-btn--block",
+            button {
+                class: "primary-btn primary-btn--block",
+                onclick: move |_| on_new.call(()),
                 Icon { glyph: "new-chat-outline".to_string() }
                 span { "{t.get(Key::NewSession)}" }
             }

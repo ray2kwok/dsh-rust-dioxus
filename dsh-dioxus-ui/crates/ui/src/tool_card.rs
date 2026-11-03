@@ -25,7 +25,30 @@ pub fn ToolCard(name: String, body: String) -> Element {
                 span { class: "tool-card__toggle muted", if expanded() { "收起" } else { "展开" } }
             }
             if expanded() {
-                pre { class: "tool-card__body", "{body}" }
+                {
+                    let rows = dsh_render::parse_unified(&body);
+                    if rows.is_empty() {
+                        rsx! { pre { class: "tool-card__body", "{body}" } }
+                    } else {
+                        let (added, removed) = dsh_render::diff_stats(&rows);
+                        rsx! {
+                            div { class: "diff-view",
+                                div { class: "diff-view__head",
+                                    span { class: "diff-add", "+{added}" }
+                                    span { class: "diff-del", "-{removed}" }
+                                }
+                                for row in rows {
+                                    div { key: "{row.text}-{row.old_no:?}-{row.new_no:?}", class: row.css_class(),
+                                        span { class: "diff-no", {row.old_no.map(|n| n.to_string()).unwrap_or_default()} }
+                                        span { class: "diff-no", {row.new_no.map(|n| n.to_string()).unwrap_or_default()} }
+                                        span { class: "diff-mark", "{row.marker()}" }
+                                        span { class: "diff-text", "{row.text}" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

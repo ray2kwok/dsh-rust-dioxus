@@ -11,11 +11,11 @@ use crate::model::{
 };
 use crate::tool_card::ToolCard;
 
-/// 首屏渲染的消息条数；点「加载更早」每次追加同样数量。
+/// 单次渲染上限：超过后只渲染尾部，避免一次挂载几千个节点。
 ///
-/// 不用固定高度的「真虚拟列表」：消息高度差异很大（Markdown/工具卡/代码块），
-/// 估算高度会导致滚动跳动，收益不如按需追加。
-const PAGE: usize = 200;
+/// 更早的历史由 `session/page` 按需拉取（`on_load_earlier`），
+/// 没有做固定高度虚拟列表——消息高度差异太大，估高会导致滚动跳动。
+const MAX_RENDER: usize = 400;
 
 #[component]
 pub fn ConversationView(
@@ -35,6 +35,10 @@ pub fn ConversationView(
     #[props(default = None)]
     context_usage: Option<(u64, u64)>,
     #[props(default = EventHandler::new(|_| {}))] on_queue_action: EventHandler<(String, bool)>,
+    /// 还有更早的历史可拉
+    #[props(default = false)]
+    has_more: bool,
+    #[props(default = EventHandler::new(|_| {}))] on_load_earlier: EventHandler<()>,
     /// (event_id, selected labels, custom text)
     #[props(default = EventHandler::new(|_| {}))]
     on_answer: EventHandler<(String, Vec<String>, String)>,
@@ -70,8 +74,7 @@ pub fn ConversationView(
     }
 
     let can_send = connection == ConnectionState::Connected;
-    let mut render_count = use_signal(|| PAGE);
-    let truncated = messages.len().saturating_sub(render_count());
+    let truncated = messages.len().saturating_sub(MAX_RENDER);
 
     rsx! {
         section { class: "conversation",
@@ -148,11 +151,11 @@ pub fn ConversationView(
                     if messages.is_empty() {
                         div { class: "empty muted", "{t.get(Key::NoMessages)}" }
                     }
-                    if truncated > 0 {
+                    if has_more {
                         button {
                             class: "load-earlier",
-                            onclick: move |_| render_count.set(render_count() + PAGE),
-                            "加载更早的 {truncated} 条"
+                            onclick: move |_| on_load_earlier.call(()),
+                            "{t.get(Key::LoadEarlier)}"
                         }
                     }
                     for message in messages.iter().skip(truncated) {

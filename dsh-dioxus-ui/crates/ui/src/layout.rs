@@ -40,12 +40,15 @@ pub fn AppShell(
     #[props(default = Vec::new())] queue: Vec<QueueItem>,
     #[props(default = None)] context_usage: Option<(u64, u64)>,
     #[props(default = EventHandler::new(|_| {}))] on_queue_action: EventHandler<(String, bool)>,
+    #[props(default = false)] has_more: bool,
+    #[props(default = EventHandler::new(|_| {}))] on_load_earlier: EventHandler<()>,
     #[props(default = EventHandler::new(|_| {}))] on_decide: EventHandler<(String, bool)>,
     #[props(default = EventHandler::new(|_| {}))] on_mode: EventHandler<SendMode>,
     #[props(default = EventHandler::new(|_| {}))] on_cancel: EventHandler<()>,
     #[props(default = EventHandler::new(|_| {}))] on_reconnect: EventHandler<()>,
     #[props(default = EventHandler::new(|_| {}))] on_open_file: EventHandler<String>,
     on_select: EventHandler<String>,
+    #[props(default = EventHandler::new(|_| {}))] on_new_session: EventHandler<()>,
     on_send: EventHandler<String>,
 ) -> Element {
     let t = use_t();
@@ -76,6 +79,7 @@ pub fn AppShell(
                         sessions: sessions.clone(),
                         active_id: active_id.clone(),
                         on_select,
+                        on_new: on_new_session,
                     }
                 }
             }
@@ -90,6 +94,8 @@ pub fn AppShell(
                     questions,
                     queue,
                     context_usage,
+                    has_more,
+                    on_load_earlier,
                     on_queue_action,
                     on_answer,
                     on_rename,

@@ -1087,3 +1087,63 @@ body[data-ds-dark-theme] .tok--fn {
   white-space: nowrap;
   color: var(--dsw-alias-label-secondary);
 }
+
+/* ---------------------------------------------------------------- Diff 卡片 */
+
+.diff-view {
+  border-top: 1px solid var(--dsw-alias-border-l1);
+  max-height: 420px;
+  overflow: auto;
+  font-family: var(--ds-font-family-code);
+  font-size: 12px;
+}
+
+.diff-view__head {
+  display: flex;
+  gap: 10px;
+  padding: 4px 10px;
+  font-size: 11px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+}
+
+.diff-add {
+  color: var(--dsw-alias-state-success-primary);
+}
+
+.diff-del {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.diff-row {
+  display: flex;
+  gap: 8px;
+  padding: 0 10px;
+  line-height: 1.55;
+  white-space: pre;
+}
+
+.diff-row--add {
+  background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 10%, transparent);
+}
+
+.diff-row--del {
+  background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent);
+}
+
+.diff-no {
+  width: 34px;
+  flex: 0 0 auto;
+  text-align: right;
+  color: var(--dsw-alias-label-caption);
+}
+
+.diff-mark {
+  width: 8px;
+  flex: 0 0 auto;
+  color: var(--dsw-alias-label-caption);
+}
+
+.diff-text {
+  flex: 1;
+  overflow-x: auto;
+}

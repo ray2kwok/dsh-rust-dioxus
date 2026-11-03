@@ -186,6 +186,28 @@ impl SessionView {
         }
     }
 
+    /// 向前插入更早的历史页（`session/page` 的结果）。
+    ///
+    /// 与 `snapshot` 的「整窗替换」不同：这里保留现有窗口，只把更早的记录
+    /// 拼到前面，并更新 `has_more`。重复 seq 会被丢弃。
+    pub fn prepend(&mut self, records: Vec<SessionWireEvent>, has_more: bool) {
+        let mut older = records;
+        older.retain(|event| {
+            !self
+                .entries
+                .iter()
+                .any(|existing| existing.seq == event.seq)
+        });
+        if older.is_empty() {
+            self.has_more = has_more;
+            return;
+        }
+        older.extend(std::mem::take(&mut self.entries));
+        older.sort_by_key(|event| event.seq);
+        self.entries = older;
+        self.has_more = has_more;
+    }
+
     /// 读一条 projection（`snapshot.projections.values[key]`）。
     ///
     /// 上游的 projection 是 `SessionProjectionBaseline.values` 里的扁平 map，

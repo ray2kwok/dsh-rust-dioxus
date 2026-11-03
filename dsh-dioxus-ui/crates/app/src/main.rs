@@ -81,6 +81,8 @@ struct Ui {
     questions: Signal<Vec<QuestionCard>>,
     queue: Signal<Vec<QueueItem>>,
     context_usage: Signal<Option<(u64, u64)>>,
+    has_more: Signal<bool>,
+    view: Signal<Option<SessionView>>,
     client_id: Signal<Option<String>>,
     running: Signal<bool>,
     send_mode: Signal<SendMode>,
@@ -120,6 +122,8 @@ fn App() -> Element {
         questions: use_signal(Vec::<QuestionCard>::new),
         queue: use_signal(Vec::<QueueItem>::new),
         context_usage: use_signal(|| None::<(u64, u64)>),
+        has_more: use_signal(|| false),
+        view: use_signal(|| None::<SessionView>),
         client_id: use_signal(|| None::<String>),
         running: use_signal(|| false),
         send_mode: use_signal(|| SendMode::Queue),
@@ -190,6 +194,33 @@ document.documentElement.style.colorScheme = dark ? 'dark' : 'light';"#
             }
         }
     });
+
+    let on_new_session = move |_| {
+        let Some(handle) = ui.client.read().clone() else {
+            return;
+        };
+        spawn(async move {
+            let cwd = std::env::current_dir()
+                .ok()
+                .map(|path| path.to_string_lossy().to_string());
+            match handle.create_session(cwd).await {
+                Ok(created) => {
+                    let id = created.session_id.as_str().to_string();
+                    tracing::info!(%id, "新建会话");
+                    if let Ok(list) = handle.list_sessions().await {
+                        ui.all_sessions
+                            .set(list.iter().map(map::to_summary).collect());
+                    }
+                    ui.active.set(Some(id.clone()));
+                    ui.messages.set(Vec::new());
+                    ui.trajectory.set(Vec::new());
+                    ui.queue.set(Vec::new());
+                    spawn_follow(Arc::clone(&handle), id, ui);
+                }
+                Err(err) => tracing::warn!(%err, "新建会话失败"),
+            }
+        });
+    };
 
     let on_select = move |id: String| {
         ui.active.set(Some(id.clone()));
@@ -351,6 +382,39 @@ document.documentElement.style.colorScheme = dark ? 'dark' : 'light';"#
         });
     };
 
+    let on_load_earlier = move |_| {
+        let Some(handle) = ui.client.read().clone() else {
+            return;
+        };
+        let Some(session_id) = (ui.active)() else {
+            return;
+        };
+        let Some(mut current) = (ui.view)() else {
+            return;
+        };
+        let Some(first_seq) = current.entries.first().map(|event| event.seq) else {
+            return;
+        };
+
+        spawn(async move {
+            match handle.page_before(session_id, first_seq, 200).await {
+                Ok(page) => {
+                    let events: Vec<_> = page
+                        .records
+                        .into_iter()
+                        .map(|record| record.event)
+                        .collect();
+                    current.prepend(events, page.has_more);
+                    tracing::info!(entries = current.len(), "已加载更早历史");
+                    ui.messages.set(map::rows(&current));
+                    ui.has_more.set(current.has_more);
+                    ui.view.set(Some(current));
+                }
+                Err(err) => tracing::warn!(%err, "加载历史失败"),
+            }
+        });
+    };
+
     let on_queue_action = move |(item_id, steer): (String, bool)| {
         let Some(handle) = ui.client.read().clone() else {
             return;
@@ -435,16 +499,19 @@ document.documentElement.style.colorScheme = dark ? 'dark' : 'light';"#
             questions: (ui.questions)(),
             queue: (ui.queue)(),
             context_usage: (ui.context_usage)(),
+            has_more: (ui.has_more)(),
             running: (ui.running)(),
             send_mode: (ui.send_mode)(),
             theme: (ui.theme)(),
             generation: (ui.generation)(),
             host_label: (ui.host_label)(),
             on_select,
+            on_new_session,
             on_send,
             on_decide,
             on_answer,
             on_queue_action,
+            on_load_earlier,
             on_rename,
             on_archive,
             on_cancel,
@@ -615,6 +682,8 @@ fn spawn_follow(handle: Arc<DshClient>, session_id: String, ui: Ui) {
     let mut active_title = ui.active_title;
     let mut queue = ui.queue;
     let mut context_usage = ui.context_usage;
+    let mut has_more = ui.has_more;
+    let mut shared_view = ui.view;
 
     spawn(async move {
         let Ok(mut stream) = handle.follow(session_id) else {
@@ -651,6 +720,8 @@ fn spawn_follow(handle: Arc<DshClient>, session_id: String, ui: Ui) {
                         trajectory.set(map::trajectory(&view));
                         queue.set(map::queue_items(&view));
                         context_usage.set(map::context_usage(&view));
+                        has_more.set(view.has_more);
+                        shared_view.set(Some(view.clone()));
                         last_flush = Instant::now();
                     }
                 }

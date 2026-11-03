@@ -118,3 +118,88 @@ mod tests {
         assert_eq!(stats(&rows), (0, 0));
     }
 }
+
+/// 解析已经成型的 unified diff 文本（工具输出常见形态）。
+///
+/// 识别 `@@` hunk 头与 `+` / `-` / ` ` 前缀；`+++` / `---` 文件头跳过。
+/// 不是 diff 的文本返回空 Vec，由调用方决定回退到普通展示。
+pub fn parse_unified(text: &str) -> Vec<DiffRow> {
+    let mut rows = Vec::new();
+    let mut old_no = 0usize;
+    let mut new_no = 0usize;
+    let mut saw_hunk = false;
+
+    for line in text.lines() {
+        if line.starts_with("--- ") || line.starts_with("+++ ") {
+            continue;
+        }
+        if line.starts_with("@@") {
+            saw_hunk = true;
+            continue;
+        }
+        let (kind, body) = match line.chars().next() {
+            Some('+') => (DiffKind::Added, &line[1..]),
+            Some('-') => (DiffKind::Removed, &line[1..]),
+            Some(' ') => (DiffKind::Context, &line[1..]),
+            _ => continue,
+        };
+        match kind {
+            DiffKind::Added => {
+                new_no += 1;
+                rows.push(DiffRow {
+                    kind,
+                    old_no: None,
+                    new_no: Some(new_no),
+                    text: body.to_string(),
+                });
+            }
+            DiffKind::Removed => {
+                old_no += 1;
+                rows.push(DiffRow {
+                    kind,
+                    old_no: Some(old_no),
+                    new_no: None,
+                    text: body.to_string(),
+                });
+            }
+            DiffKind::Context => {
+                old_no += 1;
+                new_no += 1;
+                rows.push(DiffRow {
+                    kind,
+                    old_no: Some(old_no),
+                    new_no: Some(new_no),
+                    text: body.to_string(),
+                });
+            }
+        }
+    }
+
+    if saw_hunk || !rows.is_empty() {
+        rows
+    } else {
+        Vec::new()
+    }
+}
+
+#[cfg(test)]
+mod unified_tests {
+    use super::*;
+
+    #[test]
+    fn parses_hunk_with_all_line_kinds() {
+        let text = "--- a/x.rs\n+++ b/x.rs\n@@ -1,3 +1,3 @@\n context\n-old\n+new\n";
+        let rows = parse_unified(text);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].kind, DiffKind::Context);
+        assert_eq!(rows[1].kind, DiffKind::Removed);
+        assert_eq!(rows[1].text, "old");
+        assert_eq!(rows[2].kind, DiffKind::Added);
+        assert_eq!(stats(&rows), (1, 1));
+    }
+
+    #[test]
+    fn plain_text_is_not_a_diff() {
+        assert!(parse_unified("hello\nworld").is_empty());
+    }
+}

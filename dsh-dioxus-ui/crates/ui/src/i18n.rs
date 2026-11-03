@@ -89,6 +89,7 @@ pub enum Key {
     Archive,
     RenameHint,
     Host,
+    LoadEarlier,
 }
 
 /// 取文案。
@@ -144,6 +145,7 @@ fn zh(key: Key) -> &'static str {
         Key::Archive => "归档会话",
         Key::RenameHint => "点击重命名",
         Key::Host => "Host",
+        Key::LoadEarlier => "加载更早的消息",
     }
 }
 
@@ -192,6 +194,7 @@ fn en(key: Key) -> &'static str {
         Key::Archive => "Archive session",
         Key::RenameHint => "Click to rename",
         Key::Host => "Host",
+        Key::LoadEarlier => "Load earlier messages",
     }
 }
 

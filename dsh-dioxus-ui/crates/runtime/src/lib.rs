@@ -409,6 +409,31 @@ impl DshClient {
 }
 
 impl DshClient {
+    /// 拉一页更早的历史（`session/page`，`beforeSeq` 不含）。
+    pub async fn page_before(
+        &self,
+        session_id: impl Into<String>,
+        before_seq: u64,
+        max_messages: u32,
+    ) -> Result<dsh_proto::session::SessionPage, TransportError> {
+        let request = dsh_proto::session::SessionPageRequest {
+            address: dsh_proto::session::SessionAddress::session(
+                dsh_proto::session::SessionId::new(session_id),
+            ),
+            through_seq: None,
+            before_seq: Some(before_seq),
+            max_messages: Some(max_messages),
+            turn_window: Some(dsh_proto::session::TurnWindow::default()),
+        };
+        self.rpc
+            .call::<dsh_proto::session::SessionPage>(
+                session_ep::PAGE,
+                json!({ "request": request }),
+            )
+            .await?
+            .ok_or_else(|| TransportError::Protocol("session/page 未返回结果".into()))
+    }
+
     /// 修改队列项。形状已对真实 Host 验证：
     /// `{request:{sessionId,itemId,action:{kind:"remove"|"steer"|"edit",content?}}}`
     /// —— 合法形状会走到业务错误 `session/queue-item-not-found`，非法形状则是
