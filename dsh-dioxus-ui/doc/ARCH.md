@@ -28,7 +28,7 @@
 
 | # | 决策 | 选择 | 理由 / 备选 |
 | --- | --- | --- | --- |
-| D1 | 应用形态 | **`dioxus-desktop`（wry + 系统 WebView）单窗口应用** | 系统 WebView 不打包浏览器内核，内存与分发体积最小；有完整 DOM/CSS。备选 `dioxus-native`(blitz) 是实验性渲染器、CSS 子集，不可用于本项目 |
+| D1 | 应用形态 | **`dioxus-desktop`（wry + 系统 WebView）单窗口应用** | 系统 WebView 不打包浏览器内核，内存与分发体积最小；有完整 DOM/CSS。备选 `dioxus-native`(blitz) 的可行性复核（版本、CSS 子集、无 JS、IME 等）见 [`RENDER.md`](RENDER.md) |
 | D2 | Dioxus 版本 | `=0.8.0-alpha.3`（锁定） | 与 `dioxus/` clone 一致，可本地 patch。备选 `0.7.10` stable |
 | D3 | 网络位置 | **全部在 Rust 原生侧**（`reqwest` + `tokio-tungstenite`），**不用** webview 内 fetch | 原生请求不带 `Origin`，直接绕过 Host 的 Origin 信任栅栏，无需 cookie 同源、无需内嵌代理；且传输层可在 `cargo test` 下直接跑 |
 | D4 | 路由 | `dioxus-router` + **MemoryHistory**（桌面默认） | 上游本身无 URL 路由；MemoryHistory 保留类型化路由与返回栈，语义最接近 |
