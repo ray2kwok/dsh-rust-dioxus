@@ -13,20 +13,31 @@
 use std::time::Duration;
 
 use dsh_proto::endpoint::{
-    API_PREFIX, files as files_ep, session as session_ep, subagent as subagent_ep,
+    API_PREFIX, feedback as feedback_ep, files as files_ep, interaction as interaction_ep,
+    session as session_ep, settings as settings_ep, subagent as subagent_ep,
+    workspace as workspace_ep,
 };
 use dsh_proto::events::{
     ApprovalOutcome, EventOutcome, REMOTE_EVENT_RESULT_ENDPOINT, REMOTE_EVENT_STREAM_ENDPOINT,
     RemoteEventFrame, RemoteEventResult,
 };
+use dsh_proto::interaction::{
+    AgentPresetRoster, CommandDescriptor, CommandExecution, FileReferenceCandidate, ModelCatalog,
+    PermissionCatalog, SelectModelValue, UploadValue,
+};
 use dsh_proto::session::{
     PromptContent, PromptMode, QueueAction, SessionAddress, SessionCreateRequest,
-    SessionCreateValue, SessionFollowFrame, SessionFollowRequest, SessionListValue,
-    SessionProjectionsValue, SessionPromptRequest, SessionPromptValue, SessionSummary,
-    SessionUpdateQueueRequest, SubagentMode,
+    SessionCreateValue, SessionFollowFrame, SessionFollowRequest, SessionForkRequest,
+    SessionForkValue, SessionListValue, SessionProjectionsValue, SessionPromptRequest,
+    SessionPromptValue, SessionSearchValue, SessionSummary, SessionUpdateQueueRequest,
+    SubagentMode,
 };
+use dsh_proto::settings::SettingsDescribeValue;
 use dsh_proto::subagent::{
     SubagentInterruptRequest, SubagentInterruptValue, SubagentPromptRequest, SubagentPromptValue,
+};
+use dsh_proto::workspace::{
+    WorkspaceCreateValue, WorkspaceOrderValue, WorkspacePinValue, WorkspaceValue,
 };
 use dsh_state::SessionView;
 use dsh_transport::{
@@ -91,8 +102,20 @@ impl DshClient {
         &self,
         cwd: Option<String>,
     ) -> Result<SessionCreateValue, TransportError> {
+        self.create_session_full(None, cwd, None).await
+    }
+
+    /// 按工作区 / cwd / Agent preset 新建会话。
+    pub async fn create_session_full(
+        &self,
+        workspace_id: Option<String>,
+        cwd: Option<String>,
+        agent_preset: Option<String>,
+    ) -> Result<SessionCreateValue, TransportError> {
         let request = SessionCreateRequest {
+            workspace_id,
             cwd,
+            agent_preset,
             ..Default::default()
         };
         self.rpc
@@ -120,11 +143,22 @@ impl DshClient {
         text: impl Into<String>,
         mode: PromptMode,
     ) -> Result<(), TransportError> {
+        self.prompt_content(session_id, vec![PromptContent::text(text)], mode)
+            .await
+    }
+
+    /// 发送任意内容片段（文本 / 内联图片 / 文件回执）。
+    pub async fn prompt_content(
+        &self,
+        session_id: impl Into<String>,
+        content: Vec<PromptContent>,
+        mode: PromptMode,
+    ) -> Result<(), TransportError> {
         let request = SessionPromptRequest {
             request_id: uuid::Uuid::new_v4().to_string(),
             session_id: dsh_proto::session::SessionId::new(session_id),
             mode,
-            content: vec![PromptContent::text(text)],
+            content,
             client_time_zone: None,
         };
         self.rpc
@@ -212,13 +246,32 @@ impl DshClient {
         text: impl Into<String>,
         delivery: PromptMode,
     ) -> Result<String, TransportError> {
+        self.prompt_subagent_content(
+            parent_session_id,
+            child_session_id,
+            mode,
+            vec![PromptContent::text(text)],
+            delivery,
+        )
+        .await
+    }
+
+    /// 向子会话发送任意内容片段。
+    pub async fn prompt_subagent_content(
+        &self,
+        parent_session_id: impl Into<String>,
+        child_session_id: impl Into<String>,
+        mode: SubagentMode,
+        content: Vec<PromptContent>,
+        delivery: PromptMode,
+    ) -> Result<String, TransportError> {
         let request = SubagentPromptRequest {
             request_id: uuid::Uuid::new_v4().to_string(),
             parent_session_id: dsh_proto::session::SessionId::new(parent_session_id),
             child_session_id: dsh_proto::session::SessionId::new(child_session_id),
             mode,
             delivery,
-            content: vec![PromptContent::text(text)],
+            content,
             client_time_zone: None,
         };
         let value = self
@@ -612,8 +665,306 @@ impl DshClient {
     ) -> Result<(), TransportError> {
         let request = serde_json::json!({ "request": { "sessionId": session_id.into() } });
         self.rpc
-            .call_value("workspace/archiveSession", request)
+            .call_value(workspace_ep::ARCHIVE_SESSION, request)
             .await
             .map(|_| ())
+    }
+
+    /// 会话全文搜索。
+    pub async fn search_sessions(
+        &self,
+        query: impl Into<String>,
+    ) -> Result<SessionSearchValue, TransportError> {
+        let value = self
+            .rpc
+            .call::<SessionSearchValue>(
+                session_ep::SEARCH,
+                json!({ "request": { "query": query.into() } }),
+            )
+            .await?;
+        value.ok_or_else(|| TransportError::Protocol("session/search 未返回结果".into()))
+    }
+
+    /// 从某个会话 fork。`at_seq` 为空时选最近一个已完成 turn。
+    pub async fn fork_session(
+        &self,
+        session_id: impl Into<String>,
+        at_seq: Option<u64>,
+    ) -> Result<SessionForkValue, TransportError> {
+        let request = SessionForkRequest {
+            session_id: dsh_proto::session::SessionId::new(session_id),
+            at_seq,
+            allow_migration: None,
+        };
+        let value = self
+            .rpc
+            .call::<SessionForkValue>(session_ep::FORK, json!({ "request": request }))
+            .await?;
+        value.ok_or_else(|| TransportError::Protocol("session/fork 未返回结果".into()))
+    }
+
+    /// 置顶/取消置顶会话。
+    pub async fn pin_session(
+        &self,
+        session_id: impl Into<String>,
+        pinned: bool,
+    ) -> Result<WorkspacePinValue, TransportError> {
+        let endpoint = if pinned {
+            workspace_ep::PIN_SESSION
+        } else {
+            workspace_ep::UNPIN_SESSION
+        };
+        let value = self
+            .rpc
+            .call::<WorkspacePinValue>(
+                endpoint,
+                json!({ "request": { "sessionId": session_id.into() } }),
+            )
+            .await?;
+        value.ok_or_else(|| TransportError::Protocol("workspace pin 未返回结果".into()))
+    }
+
+    /// 创建工作区（已存在的路径会复用）。
+    pub async fn create_workspace(
+        &self,
+        path: impl Into<String>,
+    ) -> Result<WorkspaceCreateValue, TransportError> {
+        let value = self
+            .rpc
+            .call::<WorkspaceCreateValue>(
+                workspace_ep::CREATE,
+                json!({ "request": { "path": path.into() } }),
+            )
+            .await?;
+        value.ok_or_else(|| TransportError::Protocol("workspace/create 未返回结果".into()))
+    }
+
+    /// 重命名工作区。
+    pub async fn rename_workspace(
+        &self,
+        workspace_id: impl Into<String>,
+        title: impl Into<String>,
+    ) -> Result<WorkspaceValue, TransportError> {
+        let value = self
+            .rpc
+            .call::<WorkspaceValue>(
+                workspace_ep::RENAME,
+                json!({ "request": { "workspaceId": workspace_id.into(), "title": title.into() } }),
+            )
+            .await?;
+        value.ok_or_else(|| TransportError::Protocol("workspace/rename 未返回结果".into()))
+    }
+
+    /// 删除工作区注册（保留文件与会话）。
+    pub async fn delete_workspace(
+        &self,
+        workspace_id: impl Into<String>,
+    ) -> Result<(), TransportError> {
+        self.rpc
+            .call_value(
+                workspace_ep::DELETE,
+                json!({ "request": { "workspaceId": workspace_id.into() } }),
+            )
+            .await
+            .map(|_| ())
+    }
+
+    /// 调整工作区顺序（`before` 为空表示移到末尾）。
+    pub async fn move_workspace(
+        &self,
+        workspace_id: impl Into<String>,
+        before_workspace_id: Option<String>,
+    ) -> Result<Vec<String>, TransportError> {
+        let request = match before_workspace_id {
+            Some(before) => json!({
+                "workspaceId": workspace_id.into(),
+                "beforeWorkspaceId": before,
+            }),
+            None => json!({ "workspaceId": workspace_id.into() }),
+        };
+        let value = self
+            .rpc
+            .call::<WorkspaceOrderValue>(workspace_ep::INSERT_BEFORE, json!({ "request": request }))
+            .await?;
+        Ok(value.map(|item| item.workspace_ids).unwrap_or_default())
+    }
+
+    /// 设置（脱敏视图）。
+    pub async fn describe_settings(&self) -> Result<SettingsDescribeValue, TransportError> {
+        let value = self
+            .rpc
+            .call::<SettingsDescribeValue>(settings_ep::DESCRIBE, json!({}))
+            .await?;
+        value.ok_or_else(|| TransportError::Protocol("settings/describe 未返回结果".into()))
+    }
+
+    /// 写入一个设置命名空间，返回写入后的视图。
+    pub async fn update_settings(
+        &self,
+        ns: impl Into<String>,
+        patch: serde_json::Value,
+        expected_revision: Option<u64>,
+    ) -> Result<dsh_proto::settings::SettingsNamespaceView, TransportError> {
+        let mut args = json!({ "ns": ns.into(), "patch": patch });
+        if let Some(revision) = expected_revision {
+            args["expectedRevision"] = serde_json::Value::from(revision);
+        }
+        let value = self
+            .rpc
+            .call::<dsh_proto::settings::SettingsNamespaceView>(settings_ep::UPDATE, args)
+            .await?;
+        value.ok_or_else(|| TransportError::Protocol("settings/update 未返回结果".into()))
+    }
+
+    /// 模型目录。
+    pub async fn model_catalog(&self) -> Result<ModelCatalog, TransportError> {
+        let value = self
+            .rpc
+            .call::<ModelCatalog>(session_ep::MODEL_CATALOG, json!({}))
+            .await?;
+        value.ok_or_else(|| TransportError::Protocol("session/modelCatalog 未返回结果".into()))
+    }
+
+    /// 为会话选择模型。
+    pub async fn select_model(
+        &self,
+        session_id: impl Into<String>,
+        provider: impl Into<String>,
+        model: impl Into<String>,
+        reasoning_effort: Option<String>,
+    ) -> Result<SelectModelValue, TransportError> {
+        let mut request = json!({
+            "sessionId": session_id.into(),
+            "provider": provider.into(),
+            "model": model.into(),
+        });
+        if let Some(effort) = reasoning_effort {
+            request["reasoningEffort"] = serde_json::Value::String(effort);
+        }
+        let value = self
+            .rpc
+            .call::<SelectModelValue>(session_ep::SELECT_MODEL, json!({ "request": request }))
+            .await?;
+        value.ok_or_else(|| TransportError::Protocol("session/selectModel 未返回结果".into()))
+    }
+
+    /// 列出某会话可见的命令。
+    pub async fn list_commands(
+        &self,
+        session_id: impl Into<String>,
+    ) -> Result<Vec<CommandDescriptor>, TransportError> {
+        let value = self
+            .rpc
+            .call::<Vec<CommandDescriptor>>(
+                interaction_ep::COMMANDS_LIST,
+                json!({ "agentId": session_id.into() }),
+            )
+            .await?;
+        Ok(value.unwrap_or_default())
+    }
+
+    /// 执行一条斜杠命令。
+    pub async fn execute_command(
+        &self,
+        session_id: impl Into<String>,
+        line: impl Into<String>,
+    ) -> Result<Option<CommandExecution>, TransportError> {
+        self.rpc
+            .call::<CommandExecution>(
+                interaction_ep::COMMANDS_EXECUTE,
+                json!({
+                    "agentId": session_id.into(),
+                    "line": line.into(),
+                    "submittedAttachments": [],
+                }),
+            )
+            .await
+    }
+
+    /// `@` 文件/技能补全。
+    pub async fn list_file_references(
+        &self,
+        session_id: impl Into<String>,
+        query: impl Into<String>,
+    ) -> Result<Vec<FileReferenceCandidate>, TransportError> {
+        let value = self
+            .rpc
+            .call::<Vec<FileReferenceCandidate>>(
+                interaction_ep::FILE_REFERENCES_LIST,
+                json!({ "agentId": session_id.into(), "query": query.into() }),
+            )
+            .await?;
+        Ok(value.unwrap_or_default())
+    }
+
+    /// 权限预设目录。
+    pub async fn permission_catalog(&self) -> Result<PermissionCatalog, TransportError> {
+        let value = self
+            .rpc
+            .call::<PermissionCatalog>(interaction_ep::PERMISSION_PRESETS, json!({}))
+            .await?;
+        value.ok_or_else(|| TransportError::Protocol("permissionPresets/catalog 未返回结果".into()))
+    }
+
+    /// Agent preset 目录。
+    pub async fn agent_presets(&self) -> Result<AgentPresetRoster, TransportError> {
+        let value = self
+            .rpc
+            .call::<AgentPresetRoster>(interaction_ep::AGENT_PRESETS_LIST, json!({}))
+            .await?;
+        value.ok_or_else(|| TransportError::Protocol("agentPresets/list 未返回结果".into()))
+    }
+
+    /// 给当前会话切换 Agent preset。
+    pub async fn select_agent_preset(
+        &self,
+        session_id: impl Into<String>,
+        preset: impl Into<String>,
+    ) -> Result<(), TransportError> {
+        self.rpc
+            .call_value(
+                "agentPresets/select",
+                json!({ "agentId": session_id.into(), "agentPreset": preset.into() }),
+            )
+            .await
+            .map(|_| ())
+    }
+
+    /// 消息反馈。
+    pub async fn put_feedback(
+        &self,
+        request: dsh_proto::interaction::MessageFeedbackPutRequest,
+    ) -> Result<serde_json::Value, TransportError> {
+        self.rpc
+            .call_value(feedback_ep::PUT, json!({ "request": request }))
+            .await
+            .map(|value| value.unwrap_or(serde_json::Value::Null))
+    }
+
+    /// 上传二进制附件（图片/文件）。
+    pub async fn upload_file(
+        &self,
+        session_id: impl Into<String>,
+        name: impl Into<String>,
+        media_type: impl Into<String>,
+        bytes: Vec<u8>,
+    ) -> Result<UploadValue, TransportError> {
+        let session_id = session_id.into();
+        let name = name.into();
+        let media_type = media_type.into();
+        let mut url = self
+            .rpc
+            .base_url()
+            .join(API_PREFIX.trim_start_matches('/'))
+            .map_err(|err| TransportError::Protocol(format!("上传 URL 拼接失败: {err}")))?;
+        url.set_path(&dsh_proto::endpoint::api_path(
+            session_ep::UPLOAD_FILE_BINARY,
+        ));
+        url.query_pairs_mut()
+            .append_pair("sessionId", &session_id)
+            .append_pair("mediaType", &media_type)
+            .append_pair("name", &name);
+        let value = self.rpc.post_raw_url(url, bytes, &media_type).await?;
+        serde_json::from_value(value).map_err(TransportError::Json)
     }
 }

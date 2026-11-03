@@ -98,6 +98,76 @@ impl RpcClient {
     ) -> Result<Option<Value>, TransportError> {
         self.call::<Value>(endpoint, args).await
     }
+
+    /// 原始字节上传（`session/uploadFileBinary`）。
+    ///
+    /// 这条路由不使用 `ClientRequest` 信封，响应是扁平的
+    /// `{ "ok": true, "value": … }` / `{ "ok": false, "error": … }`。
+    /// `path` 允许携带 query（`sessionId` / `mediaType` / `name`）。
+    pub async fn post_raw(
+        &self,
+        path: &str,
+        bytes: Vec<u8>,
+        content_type: &str,
+    ) -> Result<Value, TransportError> {
+        let url = self
+            .base
+            .join(path.trim_start_matches('/'))
+            .map_err(|err| TransportError::Protocol(format!("拼接上传 URL 失败: {err}")))?;
+        self.post_raw_url(url, bytes, content_type).await
+    }
+
+    /// 原始字节上传（调用方已拼好完整 URL）。
+    pub async fn post_raw_url(
+        &self,
+        url: reqwest::Url,
+        bytes: Vec<u8>,
+        content_type: &str,
+    ) -> Result<Value, TransportError> {
+        let mut builder = self
+            .http
+            .post(url)
+            .header(reqwest::header::CONTENT_TYPE, content_type)
+            .body(bytes);
+        if let Some(cookie) = &self.cookie {
+            builder = builder.header(reqwest::header::COOKIE, cookie);
+        }
+
+        let response = builder.send().await?;
+        let status = response.status();
+        let body = response.text().await?;
+        if !status.is_success() {
+            let snippet: String = body.chars().take(200).collect();
+            return Err(TransportError::Protocol(format!(
+                "上传返回 HTTP {status}: {snippet}"
+            )));
+        }
+
+        #[derive(serde::Deserialize)]
+        struct RawResult {
+            ok: bool,
+            #[serde(default)]
+            value: Option<Value>,
+            #[serde(default)]
+            error: Option<dsh_proto::RpcError>,
+        }
+
+        let result: RawResult = serde_json::from_str(&body)
+            .map_err(|err| TransportError::Protocol(format!("上传响应不是合法结果: {err}")))?;
+        if result.ok {
+            result
+                .value
+                .ok_or_else(|| TransportError::Protocol("上传成功但缺少 value".into()))
+        } else {
+            Err(TransportError::Rpc(result.error.ok_or_else(|| {
+                dsh_proto::RpcError {
+                    code: "gateway/internal".into(),
+                    message: "上传失败且没有 error".into(),
+                    details: Value::Null,
+                }
+            })?))
+        }
+    }
 }
 
 #[cfg(test)]

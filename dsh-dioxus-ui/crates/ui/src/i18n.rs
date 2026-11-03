@@ -245,6 +245,11 @@ impl T {
     pub fn locale(self) -> Locale {
         self.0
     }
+
+    /// 简短的内联双语文案（设置页/新组件无需为每个标签加枚举键）。
+    pub fn tr(self, zh: &'static str, en: &'static str) -> &'static str {
+        if self.0 == Locale::Zh { zh } else { en }
+    }
 }
 
 /// 从 context 取当前语言句柄。

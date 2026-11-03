@@ -159,7 +159,7 @@ Host 权威状态 → Remote（HTTP unary / WS stream）→ Client model（React
 | F-02 | 建立 `$events` 逻辑流并以其首帧 `ready` 作为「已连接」代次 | P0 | `gateway/stream-protocol` | 断线后重连成功，UI 显示连接状态变化 |
 | F-05 | Host 生命周期：复用已运行实例；未运行时拉起并在退出时回收 | P0 | `apps/cli` `dsh web` | 应用启动后即可用；关闭应用不留孤儿进程（或明确提示保留） |
 | F-03 | 断线自动重连（500ms→10s 指数退避 + 抖动），重连后会话整窗刷新 | P0 | `client/connection` | 拔网 10s 恢复，消息不丢不重 |
-| F-04 | 全局错误提示（RPC 错误码 → 可读文案） | P1 | 各 `error.code` | 错误码未知时展示原始 code/message |
+| F-04 | 全局错误提示（RPC 错误码 → 可读文案） | P1（已实现） | 各 `error.code` | 错误码未知时展示原始 code/message |
 
 ### 5.2 会话与工作区
 
@@ -168,10 +168,10 @@ Host 权威状态 → Remote（HTTP unary / WS stream）→ Client model（React
 | F-10 | 会话列表（按 workspace 分组），显示标题/时间/状态/未读 | P0 | 与会话真实状态一致；顺序与 Host 一致 |
 | F-11 | 新建会话（可指定 cwd / workspace / preset） | P0 | 新建后进入会话页并可发送 |
 | F-12 | 切换会话并加载历史（`session/follow` 快照 + 分页向上加载） | P0 | 长会话滚动到顶自动加载更早消息 |
-| F-13 | 会话重命名 / 归档 / 置顶 / fork | P1 | 操作后列表即时反映 |
-| F-14 | 会话搜索 | P1 | 关键词命中并跳转 |
-| F-15 | workspace 管理（新建/重命名/删除/排序） | P1 | 与 Host 一致 |
-| F-16 | 会话状态徽标（运行中/等待审批/空闲/错误） | P1 | 与 `api-session/status` 事件同步 |
+| F-13 | 会话重命名 / 归档 / 置顶 / fork | P1（已实现） | 操作后列表即时反映 |
+| F-14 | 会话搜索 | P1（已实现） | 关键词命中并跳转 |
+| F-15 | workspace 管理（新建/重命名/删除/排序） | P1（已实现，按钮排序） | 与 Host 一致 |
+| F-16 | 会话状态徽标（运行中/等待审批/空闲/错误） | P1（部分） | 与 `api-session/status` 事件同步 |
 
 ### 5.3 对话与消息渲染
 
@@ -181,11 +181,11 @@ Host 权威状态 → Remote（HTTP unary / WS stream）→ Client model（React
 | F-21 | 流式输出：`assistant-stream` 的 start/chunk/end 增量渲染 | P0 | token 连续追加，无闪烁、无重复 |
 | F-22 | Markdown 渲染（GFM、表格、任务列表、脚注、引用） | P0 | 常见文档结构正确 |
 | F-23 | 代码块高亮 + 复制 + 折叠长代码 | P0 | 常见语言（ts/js/py/rs/sh/json）正确 |
-| F-24 | 数学公式（`$...$` / `$$...$$`） | P1 | 与上游渲染结果一致（KaTeX 兼容） |
+| F-24 | 数学公式（`$...$` / `$$...$$`） | P1（轻量实现） | 与上游渲染结果一致（KaTeX 兼容） |
 | F-25 | 工具卡：bash / read / write / edit(diff) / search / web / ask-question + 通用兜底 | P0 | 未识别工具渲染为通用卡，不崩 |
 | F-26 | diff 视图（unified / 行内高亮） | P0 | 与上游 `DiffBlock` 视觉结构一致 |
-| F-27 | 文件引用（`#L24` / `:24-30`）可点击、图片附件可预览 | P1 | 点击定位/打开预览 |
-| F-28 | 消息操作：复制、重试、反馈（点赞/点踩） | P1 | 反馈落库（`messageFeedback/put`） |
+| F-27 | 文件引用（`#L24` / `:24-30`）可点击、图片附件可预览 | P1（部分） | 点击定位/打开预览 |
+| F-28 | 消息操作：复制、重试、反馈（点赞/点踩） | P1（已实现） | 反馈落库（`messageFeedback/put`） |
 | F-29 | 变更文件卡（deliverables） | P3 | 非多 Agent 主线，见 §5.9 |
 | F-30 | raw HTML 永不按标记渲染；危险协议（`javascript:`）禁用 | P0（安全） | 注入用例不执行 |
 
@@ -195,9 +195,9 @@ Host 权威状态 → Remote（HTTP unary / WS stream）→ Client model（React
 | --- | --- | --- | --- |
 | F-40 | 多行输入、Enter 发送 / Shift+Enter 换行、IME 中文输入不误触发 | P0 | 中文输入法组字期间不发送 |
 | F-41 | 发送模式：queue（排队）/ steer（打断并插入） | P0 | 运行中发送行为与上游一致 |
-| F-42 | 附件：图片/文件上传（`session/uploadFileBinary`）与回显 | P1 | 上传得到 receiptId 并出现在消息里 |
-| F-43 | `@` 引用文件/技能、`/` 斜杠命令补全并执行 | P1 | 补全列表来自 Host（`fileReferences/list`、`commands/list`） |
-| F-44 | 输入区状态：模型选择、权限预设、上下文占用（ContextMeter） | P1 | 与 Host 状态一致 |
+| F-42 | 附件：图片/文件上传（`session/uploadFileBinary`）与回显 | P1（已实现） | 上传得到 receiptId 并出现在消息里 |
+| F-43 | `@` 引用文件/技能、`/` 斜杠命令补全并执行 | P1（已实现） | 补全列表来自 Host（`fileReferences/list`、`commands/list`） |
+| F-44 | 输入区状态：模型选择、权限预设、上下文占用（ContextMeter） | P1（已实现） | 与 Host 状态一致 |
 | F-45 | 中断：`session/cancel` 立即生效 | P0 | 点击后流式停止并标记 interrupted |
 | F-46 | 队列管理（查看/删除待发消息） | P2（已实现） | `session/updateQueue` + `inbox` projection；`remove` / `steer` 已接通 |
 
@@ -207,7 +207,7 @@ Host 权威状态 → Remote（HTTP unary / WS stream）→ Client model（React
 | --- | --- | --- | --- |
 | F-50 | 审批（approval）：一次/总是/拒绝；结果回 `$events/result` | P0 | 允许则工具继续，拒绝则中止且理由回传 |
 | F-51 | 用户提问（ask-question）：单选/多选/自由输入 | P0 | 回答经 `userQuestions/answer` 提交，Agent 继续 |
-| F-52 | 计划（plan）卡片：查看任务清单状态 | P1 | 与 plan 事件同步 |
+| F-52 | 计划（plan）卡片：查看任务清单状态 | P1（已实现） | 与 plan 事件同步 |
 | F-53 | 子 Agent 目录（集群视图）：父会话 header 显示直接子级数量，展开为可递归的层级目录；每行展示模式（one-shot / continuable / external / unknown）、活动状态、标题、累计用量与本轮耗时 | P2 | 父会话 `subagentCatalog` 非空或读取失败时出现入口；成功加载的空目录不显示；子级按需读取其 projections |
 | F-53b | 打开子会话：点击目录行，以精确地址 `{kind:"subagent", parentSessionId, childSessionId, mode}` 打开子会话；行尾箭头在右栏侧开 | P2 | 子会话的消息、流式、审批与普通会话一致；面包屑可返回父会话 |
 | F-53c | 子会话续聊：continuable 子会话在父会话存活时可直接输入并发送（`subagents/prompt`，delivery 支持 queue / steer），并可独立停止当前 turn（`subagents/interruptByParent`） | P2 | 续聊进入子会话 FIFO；停止只影响子会话，不动父会话 |
@@ -227,22 +227,22 @@ Host 权威状态 → Remote（HTTP unary / WS stream）→ Client model（React
 
 | ID | 需求 | 优先级 | 验收要点 |
 | --- | --- | --- | --- |
-| F-60 | 三栏布局：左栏折叠/拖拽调宽、右栏 dock、窄屏自适应 | P0 | 1280 / 1024 / 768 三档不破版 |
-| F-61 | 主题 light/dark/system + 字号（正文/代码/终端）+ 字体族 | P0 | 切换即时生效并持久化到 Host settings |
-| F-62 | 设置页：General / Models / Agent presets / About | P1 | 读写 `settings/describe\|update` |
+| F-60 | 三栏布局：左栏折叠/拖拽调宽、右栏 dock、窄屏自适应 | P0（已实现） | 1280 / 1024 / 768 三档不破版 |
+| F-61 | 主题 light/dark/system + 字号（正文/代码/终端）+ 字体族 | P0（已实现正文/代码；终端随 P3） | 切换即时生效并持久化到 Host settings |
+| F-62 | 设置页：General / Models / Agent presets / About | P1（已实现） | 读写 `settings/describe\|update` |
 | F-63 | 语言切换（zh / en） | P1（已实现） | 切换后界面文案即时更新 |
 | F-63b | 其余语言（ja / es / fr / de / ru / pt） | P3 | 见 §5.9 |
 | F-64 | 快捷键（新建会话、切换栏、发送、打开设置等） | P3 | 非多 Agent 主线，见 §5.9 |
-| F-65 | 首帧不闪白（boot 前落地主题变量） | P1 | 深色系统下首屏直接深色 |
+| F-65 | 首帧不闪白（boot 前落地主题变量） | P1（已实现） | 深色系统下首屏直接深色 |
 
 ### 5.7 右栏与辅助视图
 
 | ID | 需求 | 优先级 | 验收要点 |
 | --- | --- | --- | --- |
-| F-70 | 文件树（懒加载、搜索、右键菜单） | P1 | 与 `workspaceFiles/list` 一致 |
+| F-70 | 文件树（懒加载、搜索、右键菜单） | P1（已实现） | 与 `workspaceFiles/list` 一致 |
 | F-71 | 文档预览：文本文件 | P2（已实现） | 右栏可读文本；大文件有上限提示 |
 | F-71b | 文档预览：图片 / PDF / 二进制 | P3 | 需新增解码与渲染链路，见 §5.9 |
-| F-72 | Trajectory 视图（turn/step/工具/用量） | P1 | 可定位到具体 step；用量/耗时聚合待补 |
+| F-72 | Trajectory 视图（turn/step/工具/用量） | P1（已实现） | 按 turn 分组、显示 step/用量/耗时；点击回跳消息 |
 | F-73 | Jobs 列表与终止 | P3 | 见 §5.9 |
 | F-74 | 终端 | P3（本期不做） | 需双向 uplink + ANSI 渲染，见 §5.9 |
 
@@ -330,6 +330,11 @@ Host 权威状态 → Remote（HTTP unary / WS stream）→ Client model（React
 | P3 后续 | 原 P2 其余项 + F-71b + F-73/74 + F-80/81/82 | 不设退出标准，按需排期（见 §5.9） |
 
 > M4 是本期唯一的功能主线。P1 收尾项（附件与 `@` 引用、会话搜索、Trajectory 用量/耗时聚合）不单独设里程碑，随 M4 并行推进；P3 项不占用本期排期。
+>
+> **进度（2026-11-03）**：
+>
+> - **M3 核心已实现**：三栏/拖拽调宽/窄屏规则、主题与字号字体持久化、完整设置页（General / Models / Agent presets / About）、搜索、置顶/fork、workspace 增删改与按钮排序、附件、`@`/斜杠命令、模型/权限选择、文件引用与公式、消息复制/重试/反馈、plan 卡片、文件树、Trajectory 聚合。F-15 排序为按钮式、F-16 为轻量状态（运行/等待/错误），完整 i18n 已移 P3；M3 的真机手工清单仍待跑。
+> - **M4 的 P2-1～P2-4 已实现**：子 Agent 目录树、列表 / 关系图切换、独立关系图入口、地址化子会话导航、续聊 / 独立停止、只读态、`session/control` 实时状态、侧栏过滤，以及目录读取失败/迁移提示。**未完成**：真实模型/工具链路派生子 Agent 的端到端验证，以及 S9 手工清单，因此 M4 仍为进行中，DoD 的 S9 项保持未勾选。
 
 ---
 

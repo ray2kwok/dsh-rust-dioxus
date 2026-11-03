@@ -10,3 +10,4 @@ publish.workspace = true
 [dependencies]
 dioxus.workspace = true
 dsh-render = { path = "../render" }
+serde_json.workspace = true

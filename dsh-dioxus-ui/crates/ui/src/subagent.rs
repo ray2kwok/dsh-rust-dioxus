@@ -29,6 +29,9 @@ pub fn SubagentCatalog(
     #[props(default = HashMap::new())] tree: HashMap<String, Vec<SubagentRow>>,
     #[props(default = Vec::new())] expanded: Vec<String>,
     #[props(default = String::new())] root_label: String,
+    #[props(default = None)] error: Option<String>,
+    #[props(default = false)] loading: bool,
+    #[props(default = false)] migration_required: bool,
     #[props(default = EventHandler::new(|_| {}))] on_toggle: EventHandler<String>,
     #[props(default = EventHandler::new(|_| {}))] on_open: EventHandler<SubagentRow>,
     #[props(default = EventHandler::new(|_| {}))] on_open_aside: EventHandler<SubagentRow>,
@@ -47,12 +50,13 @@ pub fn SubagentCatalog(
         }
     });
 
-    if rows.is_empty() {
+    if rows.is_empty() && error.is_none() && !loading && !migration_required {
         return rsx! {};
     }
 
     let running = rows.iter().filter(|row| row.is_running()).count();
     let flat = flatten(&tree, &rows, &expanded);
+    let degraded = migration_required;
 
     rsx! {
         div { class: "subagent-catalog",
@@ -68,7 +72,13 @@ pub fn SubagentCatalog(
                 },
                 Icon { glyph: "branch-outline".to_string(), size: 14.0 }
                 span { "{t.get(Key::Subagents)}" }
-                span { class: "subagent-trigger__count", "{rows.len()}" }
+                if error.is_some() {
+                    span { class: "chip chip--warn", "!" }
+                } else if loading {
+                    span { class: "chip chip--live", "…" }
+                } else {
+                    span { class: "subagent-trigger__count", "{rows.len()}" }
+                }
                 if running > 0 {
                     span { class: "chip chip--live", "{running}" }
                 }
@@ -76,6 +86,7 @@ pub fn SubagentCatalog(
             button {
                 class: "icon-btn subagent-graph-entry",
                 title: "{t.get(Key::GraphView)}",
+                disabled: (error.is_some() && rows.is_empty()) || migration_required || rows.is_empty(),
                 onclick: move |_| {
                     open.set(true);
                     view.set(CatalogView::Graph);
@@ -109,7 +120,22 @@ pub fn SubagentCatalog(
                             Icon { glyph: "refresh-outline".to_string(), size: 14.0 }
                         }
                     }
-                    if view() == CatalogView::List {
+                    if let Some(message) = error.clone().filter(|_| rows.is_empty()) {
+                        div { class: "subagent-empty",
+                            div { class: "muted", "{message}" }
+                            button {
+                                class: "ghost-btn",
+                                onclick: move |_| on_refresh.call(()),
+                                "{t.get(Key::Reconnect)}"
+                            }
+                        }
+                    } else if migration_required {
+                        div { class: "subagent-empty muted",
+                            "{t.tr(\"该会话历史需要迁移，只能打开已有记录，不能继续展开子级。\", \"This session needs migration; existing records can be opened but children cannot expand.\")}"
+                        }
+                    } else if loading && flat.is_empty() {
+                        div { class: "subagent-empty muted", "…" }
+                    } else if view() == CatalogView::List {
                         if flat.is_empty() {
                             div { class: "subagent-empty muted", "{t.get(Key::SubagentEmpty)}" }
                         }
@@ -120,7 +146,8 @@ pub fn SubagentCatalog(
                                 let aside_row = row.clone();
                                 let known_children = tree.get(&row.id);
                                 let external = row.mode == crate::model::SubagentMode::External;
-                                let expandable = !external
+                                let expandable = !degraded
+                                    && !external
                                     && known_children.map(|list| !list.is_empty()).unwrap_or(true);
                                 let is_open = expanded.iter().any(|id| id == &row.id);
                                 rsx! {

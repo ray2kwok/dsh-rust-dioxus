@@ -239,13 +239,25 @@ P0/P1/P2 需要的 endpoint（`args` 键带 ⚠ 的需抓包核对）：
 | `session/follow` (stream) | `request` | 打开会话（快照 + 增量 + 流式） | P0 |
 | `session/page` | `request` | 向上翻历史 | P0 |
 | `session/control` (stream) | — | 全 Host projection 基线/增量（子 Agent 实时状态来源） | P1 |
-| `session/rename` / `fork` | `request` | 重命名 / 分支 | P1 |
-| `workspace/follow` (stream) | `request` ⚠ | 工作区与会话归属 | P0 |
-| `settings/describe` / `update` | `request` ⚠ | 设置读写 | P1 |
-| `commands/list` / `execute` | `agentId` … ⚠ | 斜杠命令 | P1 |
+| `session/rename` | `request` | 重命名 | P1 |
+| `session/fork` | `request` | 从已完成 turn 分支 | P1 |
+| `session/search` | `request` | 会话全文搜索 | P1 |
+| `session/modelCatalog` | — | 模型目录 | P1 |
+| `session/selectModel` | `request` | 会话模型选择 | P1 |
+| `session/uploadFileBinary` | query + 原始字节 | 附件上传 | P1 |
+| `session/attachment` | `request` | 读取历史图片字节（后续） | P1 |
+| `workspace/follow` (stream) | — | 工作区/归档/置顶 | P0 |
+| `workspace/create` / `rename` / `delete` / `insertBefore` | `request` | 工作区管理 | P1 |
+| `workspace/pinSession` / `unpinSession` | `request` | 会话置顶 | P1 |
+| `settings/describe` | — | 设置读取 | P1 |
+| `settings/update` | `ns, patch, expectedRevision` | 设置写入 | P1 |
+| `commands/list` / `execute` | `agentId` … | 斜杠命令 | P1 |
 | `userQuestions/answer` | `agentId, callId, answer` ⚠ | 回答提问 | P0 |
-| `fileReferences/list` | `agentId, …` ⚠ | `@` 引用 | P1 |
-| `workspaceFiles/list` / `read` | `workspaceFileScopeId, …` ⚠ | 文件树 / 预览 | P1 |
+| `fileReferences/list` | `agentId, query` | `@` 引用 | P1 |
+| `permissionPresets/catalog` | — | 权限预设目录 | P1 |
+| `agentPresets/list` / `select` | — / `agentId, agentPreset` | Agent preset | P1 |
+| `messageFeedback/put` | `request` | 消息反馈 | P1 |
+| `workspaceFiles/list` / `read` | `workspaceFileScopeId, path` | 文件树 / 预览 | P1 |
 | `$events/result` | `clientId, eventId, outcome` | 审批/waterfall 回执 | P0 |
 | `session/projections` | `request` ⚠ | 按需读取某会话的 projection（子目录展开 / 失败重试） | P2 |
 | `subagents/prompt` | `request` | continuable 子会话续聊（`delivery: queue\|steer`） | P2 |
@@ -807,14 +819,12 @@ dx build --platform desktop --release
 > | M0 打通 | ✅ | 握手 → list → create → follow → `SessionView` → 渲染，全部对真实 Host 验证 |
 > | M1 渲染 | ✅ | Markdown、diff 解析、零依赖高亮、通用工具卡、流式合批 |
 > | M2 交互 | ✅ | 审批闭环 + `$events/result`（含幂等实测）；ask-question（选项 + 自定义回答）；queue/steer 与队列管理（`session/updateQueue` + `inbox` projection） |
-> | M3 可用 | ◐ | 三栏 + 主题切换 + 设置面板 + 轨迹视图；视觉对齐上游 token（配色/圆角/字体/滚动条）；
-> 图标已改用上游 `artwork.ts` 的真实 SVG 几何（内联，无 sprite）；
-> 会话重命名/归档、ask-question（选项 + 自定义回答）、i18n（zh/en，键为枚举）已接通；
-> 队列（`session/updateQueue` + `inbox` projection）、**历史分页（`session/page`）**、
-> 上下文占用（`contextPressure`）、标题（`title` projection）、
-> 归档过滤（`workspace/follow` 的 `archivedSessionIds`）、新建会话、diff 卡片均已接通。
-> 完整 i18n 字典已随范围调整移入 P3 |
-> | M4 多 Agent（P2 主线） | ◐ | P2-1～P2-4 已落地：projection 类型、地址化 follow/分页、子 Agent 目录树、续聊/独立停止、只读态、`session/control` 实时状态、侧栏过滤、右栏侧开。**待做**：真实子 Agent 会话端到端（模型派生子 Agent）、S9 手工清单、骨架/状态细节对齐 |
+> | M3 可用 | ✅（核心） | 三栏（折叠/拖拽调宽/窄屏规则）+ 主题切换 + 完整设置页 + 轨迹视图；视觉对齐上游 token；
+> 字号/字体族与主题持久化到 Host `ui-theme`；搜索、置顶/fork、workspace 增删改/按钮排序、
+> 附件、`@` 与斜杠命令、模型/权限选择、文件引用、轻量公式、消息复制/重试/反馈、plan 卡片、
+> 文件树（懒加载/搜索/右键）、Trajectory 聚合均已接通。
+> F-15 为按钮排序、F-16 为轻量状态；完整 i18n 字典已移 P3；S1–S7 真机手工清单仍待跑 |
+> | M4 多 Agent（P2 主线） | ◐ | P2-1～P2-4 已落地：projection 类型、地址化 follow/分页、子 Agent 目录树（列表 / 关系图切换 + 独立入口）、续聊/独立停止、只读态、`session/control` 实时状态、侧栏过滤、右栏侧开；目录读取失败与迁移态已显示入口/提示。**待做**：真实子 Agent 会话端到端（模型派生子 Agent）、S9 手工清单 |
 > | M5 打磨 | ◐ | 消息渲染窗口化（最近 300 条）+ release 4.7MB + 冒烟脚本；**待做**：真虚拟列表、内存曲线 |
 > | P3 后续 | — | 图片/PDF 预览、终端、Jobs、插件/定时/账号等（PR §5.9）；附件与 @ 引用、搜索仍属 P1，随 M4 并行 |
 >
@@ -829,7 +839,7 @@ dx build --platform desktop --release
 | M0-5 | 最小 UI：会话列表 + 纯文本消息 + 输入框 | `crates/ui` |
 | M1 | `dsh-render`（Markdown/代码/diff）+ 工具卡 + 流式 + 中断 | `crates/render`、`crates/ui` |
 | M2 | 审批 / 提问 / 队列 / steer / overlay 层 | `crates/ui/overlays` |
-| M3 | 三栏布局 + 主题 + 会话管理 + 设置 + i18n | `crates/ui/{layout,settings}` |
+| M3 | 三栏布局 + 主题 + 会话管理 + 设置 + i18n | `crates/ui/src/{layout,settings,composer,file_tree,sidebar}.rs` |
 | M4 | 多 Agent 协作/集群：子 Agent 目录、子会话导航、续聊与独立停止、列表隔离 | `crates/proto/src/subagent.rs`、`crates/runtime`、`crates/ui/src/{conversation,subagent}.rs` |
 | M5 | 虚拟列表、体积与内存、重连鲁棒性、e2e 固化 | 全局 |
 | P3 | 图片/PDF 预览、终端、Jobs、插件/定时/账号 | 按需（见 PR §5.9） |

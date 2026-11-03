@@ -14,6 +14,7 @@ publish = false
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
 
 # 网络：只跑 127.0.0.1，刻意不启用 TLS（见 doc/ARCH.md D11）

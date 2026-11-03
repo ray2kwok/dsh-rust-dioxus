@@ -13,24 +13,36 @@
 //! - 副作用（滚动、焦点）只出现在 `use_effect`；
 //! - 数据模型用 [`model`] 里的视图类型，不直接依赖 wire 类型。
 
+pub mod composer;
 pub mod conversation;
+pub mod file_tree;
 pub mod i18n;
 pub mod icons;
 pub mod layout;
 pub mod markdown;
+pub mod math;
 pub mod model;
+pub mod settings;
 pub mod sidebar;
 pub mod subagent;
 pub mod tool_card;
 
+pub use composer::{CommandItemView, Composer, FileRefItemView};
+pub use file_tree::FileTree;
 pub use i18n::{Key, Locale, T};
 pub use icons::Icon;
 pub use layout::AppShell;
 pub use markdown::MarkdownView;
+pub use math::MathView;
 pub use model::{
-    ApprovalItem, AsideChat, ConnectionState, FileEntry, MessageRow, QuestionCard,
-    QuestionItemView, QueueItem, Role, SendMode, SessionStatus, SessionSummary, SubagentMode,
-    SubagentRow, SubagentState, Theme, TrajectoryRow,
+    ApprovalItem, AsideChat, ComposerAttachment, ConnectionState, FileEntry, MessageRow, PlanState,
+    QuestionCard, QuestionItemView, QueueItem, Role, SearchHit, SendMode, SendRequest,
+    SessionStatus, SessionSummary, SubagentMode, SubagentRow, SubagentState, Theme, TrajectoryRow,
+    WorkspaceTab,
+};
+pub use settings::{
+    AgentPresetItemView, ModelGroupView, ModelItemView, PermissionItemView, SettingsChange,
+    SettingsPanel, SettingsSnapshot,
 };
 pub use subagent::{SubagentAside, SubagentCatalog};
 pub use tool_card::ToolCard;

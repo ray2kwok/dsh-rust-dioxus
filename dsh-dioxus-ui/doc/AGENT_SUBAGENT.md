@@ -602,7 +602,7 @@ session/control ──baseline/projection──▶ ProjectionStore
 调试：`DSH_FAKE_SUBAGENT=1` 会注入一棵假目录（worker / reviewer / external），
 用于无模型时验证目录、耗时、用量与只读态；`DSH_FAKE_SUBAGENT` 不会进入正常路径。
 
-### 6.3 子 Agent 图（可选增强）
+### 6.3 子 Agent 图（已实现）
 
 上游没有图视图，只有 header 里的缩进目录。本项目现在在同一个菜单里提供
 **“列表 / 关系图”切换**：列表是默认且保持原样；关系图是只读的 tidy-tree，
@@ -614,8 +614,8 @@ session/control ──baseline/projection──▶ ProjectionStore
 - header 的「子 Agent N」触发器旁边另有一个关系图图标按钮，点击直接以关系图打开；
 - 关系图渲染在同一浮层内，水平边界与会话面板一致（跟随 `--shell-sidebar` /
   `--shell-rightbar`，不压住左侧栏或右栏），不改变列表；
-- 节点显示：状态点 + label + 状态文本 + mode + 耗时/token；完整 session id 在
-  节点 `title` 里；
+- 节点显示：状态点 + label + mode + 耗时/token（状态由点的颜色与节点描边表达）；
+  完整 session id 在节点 `title` 里；
 - 已加载的层级全部画出来，不受列表折叠状态影响；
 - 未加载子级的节点右上角有 `+`，点击走 `on_toggle` → `session/projections`，
   加载后自动出现在图上；
@@ -855,8 +855,8 @@ DSH_FAKE_SUBAGENT=1 DSH_DEBUG_SUBAGENT_GRAPH=1 \
   在线 Agent 注册表。
 - 普通 `session/fork` 不是 subagent：不会进入目录，也不会被 `list_agents` 发现。
 - 容量只存在于当前进程，不限制累计 Session 历史或 token 用量。
-- 上游在目录读取失败时仍显示入口；本项目当前只在目录非空时显示，读取失败会隐藏
-  （后续补错误态）。
+- 目录读取失败时仍显示入口与「读取失败 + 重试」；成功加载的空目录不显示。
+  `migration-required` 会显示迁移提示，并禁用子级展开。
 - 本项目尚未跑通“真实模型派生子 Agent”的端到端（需要可用模型/工具链路）；
   S9 手工清单中的续聊/停止仍以待真机验证。
 

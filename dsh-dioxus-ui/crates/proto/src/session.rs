@@ -283,6 +283,43 @@ pub struct SessionListValue {
     pub items: Vec<SessionSummary>,
 }
 
+/// `session/search` 的一条命中。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSearchItem {
+    pub session_id: SessionId,
+    #[serde(default)]
+    pub snippet: String,
+}
+
+/// `session/search` 响应。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSearchValue {
+    #[serde(default)]
+    pub items: Vec<SessionSearchItem>,
+    #[serde(default)]
+    pub has_more: bool,
+}
+
+/// `session/fork` 请求。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionForkRequest {
+    pub session_id: SessionId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_seq: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_migration: Option<bool>,
+}
+
+/// `session/fork` 响应。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionForkValue {
+    pub session_id: SessionId,
+}
+
 /// `session/create` 请求。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

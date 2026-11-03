@@ -47,6 +47,15 @@ pub enum Inline {
         href: String,
         children: Vec<Inline>,
     },
+    Image {
+        src: String,
+        alt: String,
+    },
+    /// 行内/块级公式（TeX 原文）。
+    Math {
+        tex: String,
+        display: bool,
+    },
     /// 段落内换行。
     SoftBreak,
 }
@@ -58,6 +67,7 @@ pub fn parse(source: &str) -> Document {
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TASKLISTS);
     options.insert(Options::ENABLE_FOOTNOTES);
+    options.insert(Options::ENABLE_MATH);
 
     let mut builder = Builder::default();
 
@@ -89,6 +99,7 @@ enum FrameKind {
     Strong,
     Emphasis,
     Link(String),
+    Image(String),
 }
 
 struct ListState {
@@ -115,10 +126,14 @@ impl Builder {
             Event::TaskListMarker(done) => {
                 self.push_inline(Inline::Text(if done { "[x] " } else { "[ ] " }.to_string()));
             }
-            Event::InlineMath(text) | Event::DisplayMath(text) => {
-                // 公式暂时按行内代码展示，M1 后续接 KaTeX
-                self.push_inline(Inline::Code(text.to_string()));
-            }
+            Event::InlineMath(text) => self.push_inline(Inline::Math {
+                tex: text.to_string(),
+                display: false,
+            }),
+            Event::DisplayMath(text) => self.push_inline(Inline::Math {
+                tex: text.to_string(),
+                display: true,
+            }),
         }
     }
 
@@ -159,6 +174,7 @@ impl Builder {
             Tag::Strong => self.open_frame(FrameKind::Strong),
             Tag::Emphasis => self.open_frame(FrameKind::Emphasis),
             Tag::Link { dest_url, .. } => self.open_frame(FrameKind::Link(dest_url.to_string())),
+            Tag::Image { dest_url, .. } => self.open_frame(FrameKind::Image(dest_url.to_string())),
             // 表格按普通行内文本处理
             Tag::Table(_) | Tag::TableHead | Tag::TableRow | Tag::TableCell => {}
             _ => {}
@@ -203,6 +219,7 @@ impl Builder {
             TagEnd::Strong => self.close_frame(),
             TagEnd::Emphasis => self.close_frame(),
             TagEnd::Link => self.close_frame(),
+            TagEnd::Image => self.close_frame(),
             _ => {}
         }
     }
@@ -238,6 +255,10 @@ impl Builder {
                 href,
                 children: frame.buffer,
             },
+            FrameKind::Image(src) => Inline::Image {
+                src,
+                alt: plain_text(&frame.buffer),
+            },
         };
         self.push_inline(node);
     }
@@ -270,6 +291,23 @@ fn trim_soft_breaks(mut inlines: Vec<Inline>) -> Vec<Inline> {
         inlines.pop();
     }
     inlines
+}
+
+fn plain_text(inlines: &[Inline]) -> String {
+    let mut out = String::new();
+    for inline in inlines {
+        match inline {
+            Inline::Text(text) | Inline::Code(text) => out.push_str(text),
+            Inline::Strong(children) | Inline::Emphasis(children) => {
+                out.push_str(&plain_text(children));
+            }
+            Inline::Link { children, .. } => out.push_str(&plain_text(children)),
+            Inline::Image { alt, .. } => out.push_str(alt),
+            Inline::Math { tex, .. } => out.push_str(tex),
+            Inline::SoftBreak => out.push(' '),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -345,5 +383,27 @@ mod tests {
     #[test]
     fn plain_text_without_blocks_is_empty() {
         assert!(parse("").blocks.is_empty());
+    }
+
+    #[test]
+    fn parses_inline_and_display_math() {
+        let doc = parse("行内 $E=mc^2$\n\n$$\\frac{a}{b}$$");
+        let flattened = format!("{doc:?}");
+        assert!(flattened.contains("Math {"));
+        assert!(flattened.contains("display: true"));
+    }
+
+    #[test]
+    fn parses_image_with_alt_text() {
+        let doc = parse("![截图](data:image/png;base64,AAAA)");
+        match &doc.blocks[0] {
+            Block::Paragraph { inlines } => {
+                assert!(inlines.iter().any(|inline| matches!(
+                    inline,
+                    Inline::Image { alt, .. } if alt == "截图"
+                )));
+            }
+            other => panic!("期望 paragraph，实际 {other:?}"),
+        }
     }
 }

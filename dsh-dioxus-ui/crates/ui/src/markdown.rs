@@ -6,9 +6,15 @@
 use dioxus::prelude::*;
 use dsh_render::{Block, Inline};
 
+use crate::math::MathView;
+
 /// 渲染一段 Markdown。
 #[component]
-pub fn MarkdownView(source: String) -> Element {
+pub fn MarkdownView(
+    source: String,
+    #[props(default = EventHandler::new(|_| {}))] on_file_ref: EventHandler<String>,
+) -> Element {
+    use_context_provider(|| on_file_ref);
     let document = dsh_render::parse_markdown(&source);
 
     rsx! {
@@ -89,7 +95,7 @@ fn render_inlines(inlines: &[Inline]) -> Element {
 
 fn render_inline(inline: &Inline) -> Element {
     match inline {
-        Inline::Text(text) => rsx! { "{text}" },
+        Inline::Text(text) => render_text_with_refs(text),
         Inline::Code(code) => rsx! { code { class: "inline-code", "{code}" } },
         Inline::Strong(children) => {
             let children = children.clone();
@@ -108,6 +114,96 @@ fn render_inline(inline: &Inline) -> Element {
                 }
             }
         }
+        Inline::Image { src, alt } => {
+            let safe = src.starts_with("data:image/")
+                || src.starts_with("https://")
+                || src.starts_with("http://");
+            if safe {
+                rsx! { img { class: "md-image", src: "{src}", alt: "{alt}" } }
+            } else {
+                rsx! { span { class: "muted", "[image: {alt}]" } }
+            }
+        }
+        Inline::Math { tex, display } => rsx! {
+            MathView { tex: tex.clone(), display: *display }
+        },
         Inline::SoftBreak => rsx! { br {} },
     }
+}
+
+/// 把文本里的 `src/main.rs:24-30` / `src/main.rs#L24` 变成可点击的文件引用。
+fn render_text_with_refs(text: &str) -> Element {
+    let Some(on_file_ref) = try_use_context::<EventHandler<String>>() else {
+        return rsx! { "{text}" };
+    };
+    let mut segments: Vec<(String, Option<String>)> = Vec::new();
+    let mut cursor = 0;
+    for (start, end) in word_ranges(text) {
+        let token = &text[start..end];
+        let Some(target) = file_ref_target(token) else {
+            continue;
+        };
+        if start > cursor {
+            segments.push((text[cursor..start].to_string(), None));
+        }
+        segments.push((token.to_string(), Some(target)));
+        cursor = end;
+    }
+    if cursor == 0 {
+        return rsx! { "{text}" };
+    }
+    if cursor < text.len() {
+        segments.push((text[cursor..].to_string(), None));
+    }
+
+    rsx! {
+        for (index, (piece, target)) in segments.into_iter().enumerate() {
+            if let Some(target) = target {
+                button {
+                    key: "{index}",
+                    class: "file-ref",
+                    title: "{target}",
+                    onclick: move |_| on_file_ref.call(target.clone()),
+                    "{piece}"
+                }
+            } else {
+                span { key: "{index}", "{piece}" }
+            }
+        }
+    }
+}
+
+fn word_ranges(text: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut start = None;
+    for (index, ch) in text.char_indices() {
+        if ch.is_whitespace() {
+            if let Some(from) = start.take() {
+                ranges.push((from, index));
+            }
+        } else if start.is_none() {
+            start = Some(index);
+        }
+    }
+    if let Some(from) = start {
+        ranges.push((from, text.len()));
+    }
+    ranges
+}
+
+fn file_ref_target(token: &str) -> Option<String> {
+    let token = token.trim_end_matches([',', '.', ';', ')', ']', '，', '。']);
+    let marker = token.find("#L").or_else(|| {
+        token.rfind(':').filter(|index| {
+            token[*index + 1..]
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_ascii_digit())
+        })
+    })?;
+    let path = token[..marker].trim();
+    if path.is_empty() || (!path.contains('/') && !path.contains('.')) {
+        return None;
+    }
+    Some(path.to_string())
 }

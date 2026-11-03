@@ -4,13 +4,15 @@ use std::collections::HashMap;
 
 use dioxus::prelude::*;
 
+use crate::composer::{CommandItemView, Composer, FileRefItemView};
 use crate::i18n::{self, Key, use_t};
 use crate::icons::Icon;
 use crate::markdown::MarkdownView;
 use crate::model::{
-    ApprovalItem, ConnectionState, MessageRow, QuestionCard, QueueItem, Role, SendMode,
-    SubagentMode, SubagentRow, TrajectoryRow,
+    ApprovalItem, ConnectionState, MessageRow, PlanState, QuestionCard, QueueItem, Role, SendMode,
+    SendRequest, SubagentMode, SubagentRow, TrajectoryRow,
 };
+use crate::settings::{ModelItemView, PermissionItemView};
 use crate::subagent::SubagentCatalog;
 use crate::tool_card::ToolCard;
 
@@ -29,6 +31,21 @@ pub fn ConversationView(
     #[props(default = Vec::new())] trajectory: Vec<TrajectoryRow>,
     #[props(default = false)] running: bool,
     #[props(default = SendMode::Queue)] send_mode: SendMode,
+    #[props(default = Vec::new())] commands: Vec<CommandItemView>,
+    #[props(default = Vec::new())] file_refs: Vec<FileRefItemView>,
+    #[props(default = Vec::new())] models: Vec<ModelItemView>,
+    #[props(default = None)] selected_model: Option<(String, String)>,
+    #[props(default = Vec::new())] permissions: Vec<PermissionItemView>,
+    #[props(default = None)] selected_permission: Option<String>,
+    #[props(default = PlanState::default())] plan: PlanState,
+    #[props(default = EventHandler::new(|_| {}))] on_command_query: EventHandler<String>,
+    #[props(default = EventHandler::new(|_| {}))] on_file_query: EventHandler<String>,
+    #[props(default = EventHandler::new(|_| {}))] on_model: EventHandler<(String, String)>,
+    #[props(default = EventHandler::new(|_| {}))] on_permission: EventHandler<String>,
+    #[props(default = EventHandler::new(|_| {}))] on_copy: EventHandler<String>,
+    #[props(default = EventHandler::new(|_| {}))] on_file_ref: EventHandler<String>,
+    #[props(default = EventHandler::new(|_| {}))] on_feedback: EventHandler<(String, bool)>,
+    #[props(default = EventHandler::new(|_| {}))] on_retry: EventHandler<String>,
     #[props(default = EventHandler::new(|_| {}))] on_mode: EventHandler<SendMode>,
     #[props(default = EventHandler::new(|_| {}))] on_cancel: EventHandler<()>,
     #[props(default = EventHandler::new(|_| {}))] on_decide: EventHandler<(String, bool)>,
@@ -47,7 +64,7 @@ pub fn ConversationView(
     on_answer: EventHandler<(String, Vec<String>, String)>,
     #[props(default = EventHandler::new(|_| {}))] on_rename: EventHandler<String>,
     #[props(default = EventHandler::new(|_| {}))] on_archive: EventHandler<()>,
-    on_send: EventHandler<String>,
+    on_send: EventHandler<SendRequest>,
     on_toggle_right: EventHandler<()>,
     #[props(default = String::from("对话"))] title: String,
     /// 当前会话是否是子会话。
@@ -70,13 +87,15 @@ pub fn ConversationView(
     #[props(default = HashMap::new())]
     subagent_tree: HashMap<String, Vec<SubagentRow>>,
     #[props(default = Vec::new())] subagent_expanded: Vec<String>,
+    #[props(default = None)] subagent_error: Option<String>,
+    #[props(default = false)] subagent_loading: bool,
+    #[props(default = false)] subagent_migration: bool,
     #[props(default = EventHandler::new(|_| {}))] on_subagent_toggle: EventHandler<String>,
     #[props(default = EventHandler::new(|_| {}))] on_subagent_open: EventHandler<SubagentRow>,
     #[props(default = EventHandler::new(|_| {}))] on_subagent_aside: EventHandler<SubagentRow>,
     #[props(default = EventHandler::new(|_| {}))] on_subagent_refresh: EventHandler<()>,
 ) -> Element {
     let t = use_t();
-    let mut draft = use_signal(String::new);
     let mut tab = use_signal(|| 0u8);
     let mut renaming = use_signal(|| false);
     let mut title_draft = use_signal(String::new);
@@ -185,6 +204,9 @@ pub fn ConversationView(
                     tree: subagent_tree.clone(),
                     expanded: subagent_expanded.clone(),
                     root_label: catalog_root_label.clone(),
+                    error: subagent_error.clone(),
+                    loading: subagent_loading,
+                    migration_required: subagent_migration,
                     on_toggle: on_subagent_toggle,
                     on_open: on_subagent_open,
                     on_open_aside: on_subagent_aside,
@@ -232,19 +254,70 @@ pub fn ConversationView(
                         }
                     }
                     for message in messages.iter().skip(truncated) {
-                        MessageItem { key: "{message.id}", message: message.clone() }
+                        MessageItem {
+                            key: "{message.id}",
+                            message: message.clone(),
+                            on_copy,
+                            on_feedback,
+                            on_retry,
+                            on_file_ref,
+                        }
                     }
                 }
             } else {
-                div { class: "messages trajectory",
-                    if trajectory.is_empty() {
-                        div { class: "empty muted", "{t.get(Key::Trajectory)} · 0" }
-                    }
-                    for row in trajectory.iter() {
-                        div { key: "{row.seq}", class: "traj-row",
-                            span { class: "traj-seq", "#{row.seq}" }
-                            span { class: "traj-kind", "{row.kind}" }
-                            span { class: "traj-detail muted", "{row.detail}" }
+                {
+                    let turns = trajectory.iter().map(|row| row.turn).max().unwrap_or(0);
+                    let tokens: u64 = trajectory.iter().map(|row| row.tokens).sum();
+                    let duration: u64 = trajectory.iter().map(|row| row.duration_ms).sum();
+                    let mut last_turn = 0u32;
+                    let mut last_step = 0u32;
+                    rsx! {
+                        div { class: "messages trajectory",
+                            if trajectory.is_empty() {
+                                div { class: "empty muted", "{t.get(Key::Trajectory)} · 0" }
+                            } else {
+                                div { class: "traj-summary",
+                                    span { "{turns} turns" }
+                                    span { "{trajectory.len()} events" }
+                                    span { "{crate::subagent::format_tokens(tokens)} tokens" }
+                                    span { "{crate::subagent::format_duration(duration)}" }
+                                }
+                            }
+                            for row in trajectory.iter() {
+                                {
+                                    let show_turn = row.turn != last_turn;
+                                    let show_step = row.step != last_step && row.step > 0;
+                                    last_turn = row.turn;
+                                    last_step = row.step;
+                                    let seq = row.seq;
+                                    rsx! {
+                                        if show_turn && row.turn > 0 {
+                                            div { class: "traj-turn", "turn {row.turn}" }
+                                        }
+                                        button {
+                                            class: "traj-row",
+                                            onclick: move |_| {
+                                                tab.set(0);
+                                                let _ = document::eval(&format!(
+                                                    "const el = document.querySelector('[data-seq=\"{seq}\"]'); if (el) el.scrollIntoView({{ block: 'center' }});"
+                                                ));
+                                            },
+                                            span { class: "traj-seq", "#{row.seq}" }
+                                            if show_step {
+                                                span { class: "traj-step", "s{row.step}" }
+                                            }
+                                            span { class: "traj-kind", "{row.kind}" }
+                                            span { class: "traj-detail muted", "{row.detail}" }
+                                            if row.tokens > 0 {
+                                                span { class: "traj-meta", "{crate::subagent::format_tokens(row.tokens)}" }
+                                            }
+                                            if row.duration_ms > 0 {
+                                                span { class: "traj-meta", "{crate::subagent::format_duration(row.duration_ms)}" }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -316,90 +389,95 @@ pub fn ConversationView(
                 QuestionCardView { key: "{card.event_id}", card: card.clone(), on_answer }
             }
 
-            footer { class: if read_only_reason.is_some() { "composer composer--readonly" } else { "composer" },
-                if let Some(reason) = read_only_reason {
-                    div { class: "composer__notice", "{t.get(reason)}" }
-                    if subagent_mode.map(SubagentMode::is_continuable).unwrap_or(false) && running {
-                        button {
-                            class: "ghost-btn ghost-btn--danger",
-                            onclick: move |_| on_cancel.call(()),
-                            "{t.get(Key::Stop)}"
-                        }
-                    }
-                } else {
-                    textarea {
-                        class: "composer__input",
-                        rows: "3",
-                        placeholder: if can_send { t.get(Key::ComposerPlaceholder) } else { t.get(Key::ComposerDisabled) },
-                        disabled: !can_send,
-                        value: "{draft}",
-                        oninput: move |evt| draft.set(evt.value()),
-                        onkeydown: move |evt| {
-                            if evt.key().to_string() == "Enter" && !evt.modifiers().shift() {
-                                evt.prevent_default();
-                                let text = draft();
-                                if !text.trim().is_empty() {
-                                    on_send.call(text);
-                                    draft.set(String::new());
-                                }
-                            }
-                        },
-                    }
-                    div { class: "composer__side",
-                        div { class: "segmented",
-                            button {
-                                class: "{send_mode.css_class(send_mode == SendMode::Queue)}",
-                                onclick: move |_| on_mode.call(SendMode::Queue),
-                                "{t.get(Key::Queue)}"
-                            }
-                            button {
-                                class: "{send_mode.css_class(send_mode == SendMode::Steer)}",
-                                onclick: move |_| on_mode.call(SendMode::Steer),
-                                "{t.get(Key::Steer)}"
-                            }
-                        }
-                        if running {
-                            button {
-                                class: "ghost-btn ghost-btn--danger",
-                                onclick: move |_| on_cancel.call(()),
-                                "{t.get(Key::Stop)}"
-                            }
-                        }
-                        button {
-                            class: "primary-btn",
-                            disabled: !can_send || draft().trim().is_empty(),
-                            onclick: move |_| {
-                                let text = draft();
-                                if !text.trim().is_empty() {
-                                    on_send.call(text);
-                                    draft.set(String::new());
-                                }
-                            },
-                            "{t.get(Key::Send)}"
-                        }
-                    }
-                }
+            Composer {
+                can_send,
+                running,
+                send_mode,
+                notice: read_only_reason.map(|reason| t.get(reason).to_string()),
+                can_stop: subagent_mode.map(SubagentMode::is_continuable).unwrap_or(false),
+                commands: commands.clone(),
+                file_refs: file_refs.clone(),
+                models: models.clone(),
+                selected_model: selected_model.clone(),
+                permissions: permissions.clone(),
+                selected_permission: selected_permission.clone(),
+                plan,
+                on_send,
+                on_mode,
+                on_cancel,
+                on_model,
+                on_permission,
+                on_command_query,
+                on_file_query,
             }
         }
     }
 }
 
 #[component]
-fn MessageItem(message: MessageRow) -> Element {
+fn MessageItem(
+    message: MessageRow,
+    #[props(default = EventHandler::new(|_| {}))] on_copy: EventHandler<String>,
+    #[props(default = EventHandler::new(|_| {}))] on_feedback: EventHandler<(String, bool)>,
+    #[props(default = EventHandler::new(|_| {}))] on_retry: EventHandler<String>,
+    #[props(default = EventHandler::new(|_| {}))] on_file_ref: EventHandler<String>,
+) -> Element {
     let t = use_t();
     let role_label = t.get(i18n::role_key(message.role));
+    let copy_text = message.text.clone();
+    let feedback_id = message
+        .message_id
+        .clone()
+        .unwrap_or_else(|| message.id.clone());
+    let retry_id = message.id.clone();
 
     rsx! {
-        article { class: match message.role {
-            Role::User => "msg msg--user",
-            Role::Assistant => "msg msg--assistant",
-            Role::System => "msg msg--system",
-            Role::Tool => "msg msg--tool",
-        },
+        article {
+            class: match message.role {
+                Role::User => "msg msg--user",
+                Role::Assistant => "msg msg--assistant",
+                Role::System => "msg msg--system",
+                Role::Tool => "msg msg--tool",
+            },
+            "data-seq": message.id.trim_start_matches("e-"),
             div { class: "msg__head",
                 span { class: "msg__role", "{role_label}" }
                 if message.streaming {
                     span { class: "chip chip--live", "流式中" }
+                }
+                span { class: "spacer" }
+                button {
+                    class: "msg-action",
+                    title: t.tr("复制", "Copy"),
+                    onclick: move |_| on_copy.call(copy_text.clone()),
+                    "复制"
+                }
+                if message.role == Role::Assistant {
+                    button {
+                        class: "msg-action",
+                        title: t.tr("有帮助", "Helpful"),
+                        onclick: {
+                            let id = feedback_id.clone();
+                            move |_| on_feedback.call((id.clone(), true))
+                        },
+                        "赞"
+                    }
+                    button {
+                        class: "msg-action",
+                        title: t.tr("没帮助", "Not helpful"),
+                        onclick: {
+                            let id = feedback_id.clone();
+                            move |_| on_feedback.call((id.clone(), false))
+                        },
+                        "踩"
+                    }
+                    button {
+                        class: "msg-action",
+                        title: t.tr("重试", "Retry"),
+                        disabled: message.streaming,
+                        onclick: move |_| on_retry.call(retry_id.clone()),
+                        "重试"
+                    }
                 }
             }
             if message.role == Role::Tool {
@@ -409,7 +487,7 @@ fn MessageItem(message: MessageRow) -> Element {
                 }
             } else {
                 div { class: "msg__body",
-                    MarkdownView { source: message.text.clone() }
+                    MarkdownView { source: message.text.clone(), on_file_ref }
                     if message.streaming {
                         span { class: "caret" }
                     }

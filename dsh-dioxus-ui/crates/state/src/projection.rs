@@ -10,7 +10,7 @@
 //! - `session/follow` 的 snapshot 与 `session/projections` 的一元结果可作为
 //!   单会话的种子，覆盖同会话的旧值。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use dsh_proto::session::{SessionControlFrame, SessionProjectionsValue};
 use serde_json::Value;
@@ -19,6 +19,8 @@ use serde_json::Value;
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ProjectionStore {
     values: HashMap<String, Value>,
+    /// `session/projections` 返回 `migration-required` 的会话。
+    migration_required: HashSet<String>,
 }
 
 impl ProjectionStore {
@@ -35,6 +37,7 @@ impl ProjectionStore {
                     .iter()
                     .map(|(session_id, baseline)| (session_id.clone(), baseline.values.clone()))
                     .collect();
+                self.migration_required.clear();
             }
             SessionControlFrame::Projection {
                 session_id,
@@ -65,6 +68,16 @@ impl ProjectionStore {
     pub fn seed_result(&mut self, session_id: &str, value: &SessionProjectionsValue) {
         self.values
             .insert(session_id.to_string(), value.values().clone());
+        if matches!(value, SessionProjectionsValue::MigrationRequired { .. }) {
+            self.migration_required.insert(session_id.to_string());
+        } else {
+            self.migration_required.remove(session_id);
+        }
+    }
+
+    /// 该会话的历史是否需要迁移（只拿到了缓存值）。
+    pub fn migration_required(&self, session_id: &str) -> bool {
+        self.migration_required.contains(session_id)
     }
 
     /// 读一个会话的全部 projection。
@@ -155,5 +168,27 @@ mod tests {
         .unwrap();
         store.seed_result("s1", &value);
         assert_eq!(store.get("s1", "title"), Some(&json!("new")));
+        assert!(!store.migration_required("s1"));
+    }
+
+    #[test]
+    fn migration_required_is_tracked_and_cleared() {
+        let mut store = ProjectionStore::new();
+        let migration: SessionProjectionsValue = serde_json::from_value(json!({
+            "kind": "migration-required",
+            "values": { "subagentCatalog": [] }
+        }))
+        .unwrap();
+        store.seed_result("old", &migration);
+        assert!(store.migration_required("old"));
+
+        let sequenced: SessionProjectionsValue = serde_json::from_value(json!({
+            "kind": "sequenced",
+            "asOfSeq": 9,
+            "values": { "subagentCatalog": [] }
+        }))
+        .unwrap();
+        store.seed_result("old", &sequenced);
+        assert!(!store.migration_required("old"));
     }
 }

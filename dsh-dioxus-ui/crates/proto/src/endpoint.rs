@@ -30,6 +30,8 @@ pub mod session {
     pub const SEARCH: &str = "session/search";
     pub const CREATE: &str = "session/create";
     pub const FORK: &str = "session/fork";
+    pub const ATTACHMENT: &str = "session/attachment";
+    pub const UPLOAD_FILE_BINARY: &str = "session/uploadFileBinary";
     pub const RENAME: &str = "session/rename";
     pub const PROMPT: &str = "session/prompt";
     pub const CANCEL: &str = "session/cancel";
@@ -37,7 +39,6 @@ pub mod session {
     pub const FOLLOW: &str = "session/follow";
     pub const CONTROL: &str = "session/control";
     pub const PROJECTIONS: &str = "session/projections";
-    pub const ATTACHMENT: &str = "session/attachment";
     pub const UPDATE_QUEUE: &str = "session/updateQueue";
     pub const SELECT_MODEL: &str = "session/selectModel";
     pub const MODEL_CATALOG: &str = "session/modelCatalog";
@@ -49,6 +50,8 @@ pub mod workspace {
     pub const CREATE: &str = "workspace/create";
     pub const RENAME: &str = "workspace/rename";
     pub const DELETE: &str = "workspace/delete";
+    pub const INSERT_BEFORE: &str = "workspace/insertBefore";
+    pub const INSERT_SESSION_BEFORE: &str = "workspace/insertSessionBefore";
     pub const ARCHIVE_SESSION: &str = "workspace/archiveSession";
     pub const UNARCHIVE_SESSION: &str = "workspace/unarchiveSession";
     pub const PIN_SESSION: &str = "workspace/pinSession";
@@ -70,6 +73,12 @@ pub mod interaction {
     pub const USER_QUESTIONS_ANSWER: &str = "userQuestions/answer";
     pub const PERMISSION_PRESETS: &str = "permissionPresets/catalog";
     pub const FILE_REFERENCES_LIST: &str = "fileReferences/list";
+    pub const AGENT_PRESETS_LIST: &str = "agentPresets/list";
+}
+
+/// 消息反馈。
+pub mod feedback {
+    pub const PUT: &str = "messageFeedback/put";
 }
 
 /// 文件系统。

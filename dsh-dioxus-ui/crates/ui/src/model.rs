@@ -46,6 +46,8 @@ pub enum Role {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MessageRow {
     pub id: String,
+    /// Host durable message id（用于反馈；本地回显时为 `None`）。
+    pub message_id: Option<String>,
     pub role: Role,
     pub text: String,
     pub streaming: bool,
@@ -56,6 +58,7 @@ impl MessageRow {
     pub fn new(id: impl Into<String>, role: Role, text: impl Into<String>) -> Self {
         Self {
             id: id.into(),
+            message_id: None,
             role,
             text: text.into(),
             streaming: false,
@@ -154,12 +157,64 @@ impl Theme {
     }
 }
 
-/// Trajectory 视图的一行（原始事件的轻量展示）。
+/// Trajectory 视图的一行。
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrajectoryRow {
     pub seq: u64,
     pub kind: String,
     pub detail: String,
+    /// 所属 turn（从 1 开始；未知为 0）。
+    pub turn: u32,
+    /// 所属 step（从 1 开始；未知为 0）。
+    pub step: u32,
+    /// 该事件携带的 token 增量（没有则为 0）。
+    pub tokens: u64,
+    /// 事件耗时（毫秒，未知为 0）。
+    pub duration_ms: u64,
+}
+
+/// 一条待发送附件（字节保留到发送时再上传/内联）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ComposerAttachment {
+    pub id: String,
+    pub name: String,
+    pub media_type: String,
+    pub bytes: Vec<u8>,
+}
+
+impl ComposerAttachment {
+    pub fn is_image(&self) -> bool {
+        self.media_type.starts_with("image/")
+    }
+}
+
+/// 输入区提交的完整内容。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SendRequest {
+    pub text: String,
+    pub attachments: Vec<ComposerAttachment>,
+}
+
+/// 侧栏搜索结果。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SearchHit {
+    pub session_id: String,
+    pub snippet: String,
+}
+
+/// 侧栏工作区分组头。
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkspaceTab {
+    pub id: String,
+    pub title: String,
+    pub path: String,
+}
+
+/// 计划模式投影。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PlanState {
+    pub active: bool,
+    pub pending: bool,
 }
 
 /// 右栏文件树的一项。
