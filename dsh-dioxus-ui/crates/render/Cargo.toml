@@ -1,0 +1,12 @@
+[package]
+name = "dsh-render"
+description = "Markdown / diff 解析为可渲染的中间结构（纯函数）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+similar = "3"

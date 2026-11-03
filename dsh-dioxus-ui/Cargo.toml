@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/proto", "crates/transport", "crates/state", "crates/ui", "crates/app"]
+members = ["crates/proto", "crates/transport", "crates/state", "crates/runtime", "crates/render", "crates/ui", "crates/app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -32,6 +32,7 @@ tokio = { version = "1", features = [
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # UI
 dioxus = { version = "=0.8.0-alpha.3", features = ["desktop", "router"] }

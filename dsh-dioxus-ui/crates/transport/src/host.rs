@@ -69,9 +69,13 @@ pub struct HostConfig {
 }
 
 impl Default for HostConfig {
+    /// `DSH_BIN` 可覆盖可执行文件（开发时常用 `./scripts/dev-host.sh`）。
     fn default() -> Self {
+        let bin = std::env::var_os("DSH_BIN")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("dsh"));
         Self {
-            bin: PathBuf::from("dsh"),
+            bin,
             args: ["web", "--no-open", "--port", "0"]
                 .iter()
                 .map(|s| (*s).to_string())

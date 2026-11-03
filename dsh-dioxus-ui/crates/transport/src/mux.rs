@@ -16,7 +16,7 @@ use dsh_proto::RpcError;
 use dsh_proto::stream::{MuxClientMsg, MuxServerMsg, REMOTE_STREAM_MUX_PATH};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::Url;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -200,6 +200,14 @@ impl MuxConnection {
             rx,
             control: self.tx.clone(),
         })
+    }
+
+    /// 打开逻辑流，自动补 `{ "args": … }` 外壳。
+    ///
+    /// 网关校验要求 payload **恰好**有一个 object 类型的 `args` 字段，
+    /// 直接传 `{"request": …}` 会被拒：`Remote payload must contain exactly one plain-object args field`。
+    pub fn open_args(&self, endpoint: &str, args: Value) -> Result<StreamHandle, TransportError> {
+        self.open(endpoint, json!({ "args": args }))
     }
 
     /// 当前活跃流数量（诊断用）。

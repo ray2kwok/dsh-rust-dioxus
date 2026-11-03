@@ -169,6 +169,35 @@ pub enum SubagentMode {
     Unknown,
 }
 
+/// `session/list` 里的一条会话摘要。
+///
+/// 上游：`packages/api/session-controller/src/types.ts:151`
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSummary {
+    /// 当前是否有存活的 Agent 附着。
+    pub agent_available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format_status: Option<String>,
+    pub session_id: SessionId,
+    pub updated_at: u64,
+    pub running: bool,
+    /// 是否是还没开始过的空白会话。
+    pub blank: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<SessionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+}
+
+/// `session/list` 响应。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionListValue {
+    pub items: Vec<SessionSummary>,
+}
+
 /// `session/create` 请求。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

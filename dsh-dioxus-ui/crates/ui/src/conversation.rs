@@ -5,7 +5,9 @@
 
 use dioxus::prelude::*;
 
+use crate::markdown::MarkdownView;
 use crate::model::{ConnectionState, MessageRow, Role};
+use crate::tool_card::ToolCard;
 
 #[component]
 pub fn ConversationView(
@@ -117,10 +119,17 @@ fn MessageItem(message: MessageRow) -> Element {
                     span { class: "chip chip--live", "流式中" }
                 }
             }
-            div { class: "msg__body",
-                "{message.text}"
-                if message.streaming {
-                    span { class: "caret" }
+            if message.role == Role::Tool {
+                ToolCard {
+                    name: message.tool_name.clone().unwrap_or_else(|| "tool".to_string()),
+                    body: message.text.clone(),
+                }
+            } else {
+                div { class: "msg__body",
+                    MarkdownView { source: message.text.clone() }
+                    if message.streaming {
+                        span { class: "caret" }
+                    }
                 }
             }
         }

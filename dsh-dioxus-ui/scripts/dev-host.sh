@@ -26,6 +26,9 @@ for arg in "$@"; do
   case "$arg" in
     --no-typert) GEN_TYPERT=0 ;;
     --help|-h)   sed -n '3,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    # 允许直接作为 DSH_BIN 被客户端调用（客户端会传 web --no-open --port 0），
+    # 这些参数由本脚本自行拼装，这里只做忽略。
+    web|--no-open|--port|0|[0-9]*) ;;
     *)           echo "未知参数: $arg" >&2; exit 2 ;;
   esac
 done

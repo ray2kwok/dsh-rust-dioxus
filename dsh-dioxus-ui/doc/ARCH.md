@@ -223,6 +223,10 @@ pub struct ServerResponse<T> {
    - `Agent` 形参线上是 `agentId`；`Session` 形参是 `sessionId`
    - `workspaceFiles/*` 的 scope 形参线上是 `workspaceFileScopeId`
 4. WS 帧全部是 JSON **文本帧**，键名严格匹配（多一个少一个都可能被判协议错误）。
+5. `open` 帧的 `payload` 与一元请求**同构**：必须自带 `{ "args": … }` 外壳。
+   直接传 `{"request": …}` 会被网关拒绝：
+   `gateway/internal: Remote payload must contain exactly one plain-object args field`。
+   代码里统一用 `MuxConnection::open_args()` 自动补壳。
 
 P0/P1 需要的 endpoint（`args` 键带 ⚠ 的需抓包核对）：
 
@@ -657,6 +661,14 @@ dx build --platform desktop --release
 ---
 
 ## 19. 实施计划
+
+> **进度（2026-11-03）**：
+> - M0-1 ~ M0-5 完成并通过真实 Host 验证（握手 → `session/list` → `session/create`
+>   → `session/follow` → `SessionView` → 渲染）；
+> - M1 完成：Markdown 解析与渲染（`dsh-render` + `MarkdownView`）、diff 行解析、
+>   代码高亮（零依赖扫描器，见 `dsh-render::highlight`）、通用工具卡、流式合批节流；
+> - 断线自动重连已实现并实测（杀掉 Host → 500ms 退避 → 新 Host → generation+1）。
+> 下一步 M2：审批 / 提问 / 队列 / steer 的交互闭环。
 
 | 阶段 | 交付 | 关键文件 |
 | --- | --- | --- |

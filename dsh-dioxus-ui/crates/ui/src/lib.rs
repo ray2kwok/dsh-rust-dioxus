@@ -15,8 +15,12 @@
 
 pub mod conversation;
 pub mod layout;
+pub mod markdown;
 pub mod model;
 pub mod sidebar;
+pub mod tool_card;
 
 pub use layout::AppShell;
+pub use markdown::MarkdownView;
 pub use model::{ConnectionState, MessageRow, Role, SessionStatus, SessionSummary};
+pub use tool_card::ToolCard;
