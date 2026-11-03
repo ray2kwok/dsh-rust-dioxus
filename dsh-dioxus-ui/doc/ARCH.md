@@ -731,6 +731,8 @@ ws close → ConnectionState::Connecting（状态栏提示，输入框可继续�
 
 ## 16. 性能与资源
 
+> 实机采样数据（进程模型 / 内存 / CPU / 启动 / 磁盘 / IO）见 [`RESOURCE.md`](RESOURCE.md)：2026-11-03，ARM Cortex-A55、Wayland、WebKitGTK 2.52.6，空闲约 519 MB PSS + 2% 单核。
+
 | 关注点 | 手段 |
 | --- | --- |
 | 流式渲染 | chunk 进 ring buffer，每帧 flush 一次（16ms tick），不逐 chunk 重渲 |
