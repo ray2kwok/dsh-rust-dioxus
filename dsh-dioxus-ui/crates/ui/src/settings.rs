@@ -51,6 +51,25 @@ pub struct ModelGroupView {
     pub models: Vec<ModelItemView>,
 }
 
+/// 一条可配置的模型提供方。
+///
+/// `key_ref` 是凭据引用（通常是 API Key 的环境变量名）：
+/// 官方实现取该命名空间自身的 `apiKeyEnv`，pi-ai route 取 `nativeAuth.env[0]`。
+/// `None` 表示该提供方只能走登录流程，这里不提供填写入口。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProviderRow {
+    pub id: String,
+    pub name: String,
+    pub key_ref: Option<String>,
+    pub configured: bool,
+    pub writable: bool,
+    pub active: bool,
+    /// 写入 route 用的设置命名空间（官方实现为 `llm-deepseek`，pi-ai 为 `llm-pi-ai`）。
+    pub settings_ns: String,
+    /// 空表示官方实现；否则是 `["providers", "<route>"]`。
+    pub settings_path: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PermissionItemView {
     pub value: String,
@@ -79,6 +98,7 @@ enum Section {
 pub fn SettingsPanel(
     snapshot: Option<SettingsSnapshot>,
     #[props(default = Vec::new())] model_groups: Vec<ModelGroupView>,
+    #[props(default = Vec::new())] providers: Vec<ProviderRow>,
     #[props(default = Vec::new())] permissions: Vec<PermissionItemView>,
     #[props(default = Vec::new())] agent_presets: Vec<AgentPresetItemView>,
     #[props(default = None)] selected_model: Option<(String, String)>,
@@ -88,12 +108,16 @@ pub fn SettingsPanel(
     #[props(default = false)] saving: bool,
     on_change: EventHandler<SettingsChange>,
     #[props(default = EventHandler::new(|_| {}))] on_select_model: EventHandler<(String, String)>,
+    #[props(default = EventHandler::new(|_| {}))] on_provider_save: EventHandler<(String, String)>,
+    #[props(default = EventHandler::new(|_| {}))] on_provider_remove: EventHandler<String>,
     #[props(default = EventHandler::new(|_| {}))] on_select_permission: EventHandler<String>,
     #[props(default = EventHandler::new(|_| {}))] on_apply_preset: EventHandler<String>,
     on_close: EventHandler<()>,
 ) -> Element {
     let t = use_t();
     let mut section = use_signal(|| Section::General);
+    let mut provider_choice = use_signal(String::new);
+    let mut provider_key = use_signal(String::new);
 
     let Some(snapshot) = snapshot else {
         return rsx! {
@@ -109,6 +133,19 @@ pub fn SettingsPanel(
                 }
             }
         };
+    };
+
+    // 下拉默认落在第一个「可填写凭据」的提供方上，避免空选。
+    let first_choice = providers
+        .iter()
+        .find(|item| item.key_ref.is_some())
+        .map(|item| item.id.clone())
+        .unwrap_or_default();
+    let chosen = provider_choice();
+    let choice_id = if chosen.is_empty() {
+        first_choice
+    } else {
+        chosen
     };
 
     let tab = |id: Section, label: &'static str| {
@@ -294,28 +331,94 @@ pub fn SettingsPanel(
                             }
                         },
                         Section::Models => rsx! {
-                            if model_groups.is_empty() {
-                                div { class: "muted", "{t.tr(\"Host 未返回可用模型。\", \"No models reported by the Host.\")}" }
+                            div { class: "settings-group",
+                                div { class: "settings-label", "{t.tr(\"模型提供方\", \"Model providers\")}" }
+                                div { class: "settings-hint",
+                                    "{t.tr(\"填写 API Key 后，Host 会返回该提供方的模型。\", \"The Host lists a provider's models once its API key is set.\")}"
+                                }
+                                div { class: "settings-row",
+                                    select {
+                                        class: "settings-input",
+                                        value: "{choice_id}",
+                                        onchange: move |evt| provider_choice.set(evt.value()),
+                                        for provider in providers.iter().filter(|item| item.key_ref.is_some()) {
+                                            option {
+                                                key: "{provider.id}",
+                                                value: "{provider.id}",
+                                                selected: provider.id == choice_id,
+                                                "{provider.name}"
+                                            }
+                                        }
+                                    }
+                                    input {
+                                        class: "settings-input",
+                                        r#type: "password",
+                                        placeholder: t.tr("API Key", "API key"),
+                                        value: "{provider_key()}",
+                                        oninput: move |evt| provider_key.set(evt.value()),
+                                    }
+                                    button {
+                                        class: "primary-btn",
+                                        disabled: saving || choice_id.is_empty(),
+                                        onclick: {
+                                            let id = choice_id.clone();
+                                            move |_| {
+                                                let key = provider_key.read().trim().to_string();
+                                                if key.is_empty() {
+                                                    return;
+                                                }
+                                                on_provider_save.call((id.clone(), key));
+                                                provider_key.set(String::new());
+                                            }
+                                        },
+                                        "{t.tr(\"保存\", \"Save\")}"
+                                    }
+                                }
+                                for provider in providers.iter().filter(|item| item.configured) {
+                                    div { key: "{provider.id}", class: "settings-row",
+                                        span { class: "settings-hint", "{provider.name}" }
+                                        span { class: "muted mono", "{provider.id}" }
+                                        if let Some(reference) = provider.key_ref.clone() {
+                                            span { class: "muted mono", "{reference}" }
+                                        }
+                                        span { class: "spacer" }
+                                        span { class: "chip chip--ok", "{t.tr(\"已配置\", \"Configured\")}" }
+                                        button {
+                                            class: "ghost-btn",
+                                            onclick: {
+                                                let id = provider.id.clone();
+                                                move |_| on_provider_remove.call(id.clone())
+                                            },
+                                            "{t.tr(\"清除\", \"Remove\")}"
+                                        }
+                                    }
+                                }
                             }
-                            for group in model_groups.iter() {
-                                div { key: "{group.id}", class: "settings-group",
-                                    div { class: "settings-label", "{group.name}" }
-                                    for model in group.models.iter() {
-                                        {
-                                            let selected = selected_model.as_ref().is_some_and(|(provider, id)| {
-                                                provider == &model.provider && id == &model.model
-                                            });
-                                            let provider = model.provider.clone();
-                                            let id = model.model.clone();
-                                            rsx! {
-                                                button {
-                                                    key: "{model.model}",
-                                                    class: if selected { "model-row model-row--selected" } else { "model-row" },
-                                                    onclick: move |_| on_select_model.call((provider.clone(), id.clone())),
-                                                    span { class: "model-row__name", "{model.name}" }
-                                                    span { class: "model-row__id muted mono", "{model.model}" }
-                                                    if selected {
-                                                        span { class: "chip chip--ok", "{t.tr(\"当前\", \"Current\")}" }
+                            div { class: "settings-group",
+                                div { class: "settings-label", "{t.tr(\"模型\", \"Models\")}" }
+                                if model_groups.is_empty() {
+                                    div { class: "muted", "{t.tr(\"Host 未返回可用模型。\", \"No models reported by the Host.\")}" }
+                                }
+                                for group in model_groups.iter() {
+                                    div { key: "{group.id}", class: "settings-group",
+                                        div { class: "settings-label", "{group.name}" }
+                                        for model in group.models.iter() {
+                                            {
+                                                let selected = selected_model.as_ref().is_some_and(|(provider, id)| {
+                                                    provider == &model.provider && id == &model.model
+                                                });
+                                                let provider = model.provider.clone();
+                                                let id = model.model.clone();
+                                                rsx! {
+                                                    button {
+                                                        key: "{model.model}",
+                                                        class: if selected { "model-row model-row--selected" } else { "model-row" },
+                                                        onclick: move |_| on_select_model.call((provider.clone(), id.clone())),
+                                                        span { class: "model-row__name", "{model.name}" }
+                                                        span { class: "model-row__id muted mono", "{model.model}" }
+                                                        if selected {
+                                                            span { class: "chip chip--ok", "{t.tr(\"当前\", \"Current\")}" }
+                                                        }
                                                     }
                                                 }
                                             }

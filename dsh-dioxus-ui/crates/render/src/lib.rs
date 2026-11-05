@@ -8,10 +8,12 @@
 //! - **结构扁平**：块内只保留行内元素，牺牲极少见的深层嵌套换取可读性；
 //! - **降级优先**：任何无法识别的结构都退化成文本，不 panic。
 
+pub mod ansi;
 pub mod diff;
 pub mod highlight;
 pub mod markdown;
 
+pub use ansi::{AnsiColor, AnsiLine, AnsiSpan, AnsiStyle, parse as parse_ansi};
 pub use diff::{DiffKind, DiffRow, parse_unified, rows as diff_rows, stats as diff_stats};
 pub use highlight::{Span, Token, highlight};
-pub use markdown::{Block, Document, Inline, parse as parse_markdown};
+pub use markdown::{Block, Document, Inline, ListItem, parse as parse_markdown};

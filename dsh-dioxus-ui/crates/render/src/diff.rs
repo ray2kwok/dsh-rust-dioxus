@@ -128,9 +128,11 @@ pub fn parse_unified(text: &str) -> Vec<DiffRow> {
     let mut old_no = 0usize;
     let mut new_no = 0usize;
     let mut saw_hunk = false;
+    let mut saw_header = false;
 
     for line in text.lines() {
         if line.starts_with("--- ") || line.starts_with("+++ ") {
+            saw_header = true;
             continue;
         }
         if line.starts_with("@@") {
@@ -175,7 +177,9 @@ pub fn parse_unified(text: &str) -> Vec<DiffRow> {
         }
     }
 
-    if saw_hunk || !rows.is_empty() {
+    // 只有出现 `@@` hunk 或 `---/+++` 文件头才算 diff。
+    // 否则 shell 输出里单独一行 `---` 会被误判成「删了一行」。
+    if saw_hunk || saw_header {
         rows
     } else {
         Vec::new()
@@ -185,6 +189,12 @@ pub fn parse_unified(text: &str) -> Vec<DiffRow> {
 #[cfg(test)]
 mod unified_tests {
     use super::*;
+
+    #[test]
+    fn plain_output_with_dashes_is_not_a_diff() {
+        let text = "/work/project\n---\n.\n..\nCargo.toml\n";
+        assert!(parse_unified(text).is_empty(), "普通输出不能被当成 diff");
+    }
 
     #[test]
     fn parses_hunk_with_all_line_kinds() {

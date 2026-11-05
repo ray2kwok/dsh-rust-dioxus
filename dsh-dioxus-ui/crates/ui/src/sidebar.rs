@@ -20,6 +20,9 @@ pub fn SessionList(
     #[props(default = String::new())] search_query: String,
     #[props(default = Vec::new())] search_results: Vec<SearchHit>,
     #[props(default = false)] searching: bool,
+    /// 右侧会话面板不再重复「新建工作区」（入口在左侧资源管理器）。
+    #[props(default = true)]
+    show_workspace_add: bool,
     on_select: EventHandler<String>,
     on_new: EventHandler<Option<String>>,
     #[props(default = EventHandler::new(|_| {}))] on_search: EventHandler<String>,
@@ -93,47 +96,49 @@ pub fn SessionList(
                 Icon { glyph: "new-chat-outline".to_string() }
                 span { "{t.get(Key::NewSession)}" }
             }
-            button {
-                class: "ghost-btn sidebar-workspace-add",
-                onclick: move |_| adding_workspace.toggle(),
-                Icon { glyph: "plus-outline".to_string(), size: 12.0 }
-                span { "{t.tr(\"新建工作区\", \"New workspace\")}" }
-            }
-            if adding_workspace() {
-                div { class: "sidebar-inline-form",
-                    input {
-                        class: "settings-input",
-                        value: "{workspace_path}",
-                        placeholder: t.tr("工作区目录路径", "Workspace directory path"),
-                        oninput: move |evt| workspace_path.set(evt.value()),
-                        onkeydown: move |evt| {
-                            if evt.key().to_string() == "Enter" {
-                                let path = workspace_path().trim().to_string();
-                                if !path.is_empty() {
-                                    on_new_workspace.call(path);
-                                    workspace_path.set(String::new());
-                                    adding_workspace.set(false);
-                                }
-                            }
-                        },
-                    }
-                    div { class: "sidebar-inline-actions",
-                        button {
-                            class: "ghost-btn",
-                            onclick: move |_| {
-                                let path = workspace_path().trim().to_string();
-                                if !path.is_empty() {
-                                    on_new_workspace.call(path);
-                                    workspace_path.set(String::new());
-                                    adding_workspace.set(false);
+            if show_workspace_add {
+                button {
+                    class: "ghost-btn sidebar-workspace-add",
+                    onclick: move |_| adding_workspace.toggle(),
+                    Icon { glyph: "plus-outline".to_string(), size: 12.0 }
+                    span { "{t.tr(\"新建工作区\", \"New workspace\")}" }
+                }
+                if adding_workspace() {
+                    div { class: "sidebar-inline-form",
+                        input {
+                            class: "settings-input",
+                            value: "{workspace_path}",
+                            placeholder: t.tr("工作区目录路径", "Workspace directory path"),
+                            oninput: move |evt| workspace_path.set(evt.value()),
+                            onkeydown: move |evt| {
+                                if evt.key().to_string() == "Enter" {
+                                    let path = workspace_path().trim().to_string();
+                                    if !path.is_empty() {
+                                        on_new_workspace.call(path);
+                                        workspace_path.set(String::new());
+                                        adding_workspace.set(false);
+                                    }
                                 }
                             },
-                            "{t.tr(\"创建\", \"Create\")}"
                         }
-                        button {
-                            class: "ghost-btn",
-                            onclick: move |_| adding_workspace.set(false),
-                            "{t.tr(\"取消\", \"Cancel\")}"
+                        div { class: "sidebar-inline-actions",
+                            button {
+                                class: "ghost-btn",
+                                onclick: move |_| {
+                                    let path = workspace_path().trim().to_string();
+                                    if !path.is_empty() {
+                                        on_new_workspace.call(path);
+                                        workspace_path.set(String::new());
+                                        adding_workspace.set(false);
+                                    }
+                                },
+                                "{t.tr(\"创建\", \"Create\")}"
+                            }
+                            button {
+                                class: "ghost-btn",
+                                onclick: move |_| adding_workspace.set(false),
+                                "{t.tr(\"取消\", \"Cancel\")}"
+                            }
                         }
                     }
                 }

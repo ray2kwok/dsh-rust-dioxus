@@ -65,14 +65,52 @@ fn render_block(block: &Block) -> Element {
             rsx! {
                 if ordered {
                     ol { class: "md-list",
-                        for item in items {
-                            li { {render_inlines(&item)} }
+                        for (index, item) in items.iter().enumerate() {
+                            li {
+                                key: "{index}",
+                                class: "md-li",
+                                style: "margin-left: {item.depth * 18}px",
+                                {render_inlines(&item.inlines)}
+                            }
                         }
                     }
                 } else {
                     ul { class: "md-list",
-                        for item in items {
-                            li { {render_inlines(&item)} }
+                        for (index, item) in items.iter().enumerate() {
+                            li {
+                                key: "{index}",
+                                class: "md-li",
+                                style: "margin-left: {item.depth * 18}px",
+                                {render_inlines(&item.inlines)}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Block::Table { head, rows } => {
+            let head = head.clone();
+            let rows = rows.clone();
+            rsx! {
+                div { class: "md-table-wrap",
+                    table { class: "md-table",
+                        if !head.is_empty() {
+                            thead {
+                                tr {
+                                    for (index, cell) in head.iter().enumerate() {
+                                        th { key: "{index}", {render_inlines(cell)} }
+                                    }
+                                }
+                            }
+                        }
+                        tbody {
+                            for (row_index, row) in rows.iter().enumerate() {
+                                tr { key: "{row_index}",
+                                    for (cell_index, cell) in row.iter().enumerate() {
+                                        td { key: "{cell_index}", {render_inlines(cell)} }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -104,6 +142,10 @@ fn render_inline(inline: &Inline) -> Element {
         Inline::Emphasis(children) => {
             let children = children.clone();
             rsx! { em { {render_inlines(&children)} } }
+        }
+        Inline::Strike(children) => {
+            let children = children.clone();
+            rsx! { del { {render_inlines(&children)} } }
         }
         Inline::Link { href, children } => {
             let href = href.clone();

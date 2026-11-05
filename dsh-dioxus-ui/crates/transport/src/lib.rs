@@ -42,7 +42,7 @@ pub use backoff::Backoff;
 pub use credential::{Credential, acquire, acquire_api, acquire_browser};
 pub use error::TransportError;
 pub use host::{HostConfig, HostSupervisor, LaunchInfo, parse_launch_line};
-pub use mux::{MuxConnection, StreamEvent, StreamHandle};
+pub use mux::{MuxConnection, StreamEvent, StreamHandle, StreamUplink};
 pub use rpc::RpcClient;
 
 impl Credential {

@@ -67,7 +67,6 @@
 | --- | --- |
 | 重写 Host / Agent 逻辑 | Host 是唯一后端，本项目只做客户端 |
 | 复刻 Cordis 插件系统与 HMR 热替换 | 编译期组件树替代；插件热更新属于开发体验，不在产品范围 |
-| 终端（pty） | 需要双向 uplink 流 + xterm 级渲染；已移入 P3 待办池（§5.9） |
 | 浏览器标签页（`ui-sidebar-browser`） | 上游 Web profile 已 `disabled`，仅 Desktop 有 |
 | 桌面原生能力（`openWorkspacePath`、原生目录选择等） | 依赖 Host 侧桌面/Electron 能力；本地 GUI 形态可后续评估，本期不做 |
 | 插件市场安装、动态插件运行 | 依赖 Host 侧插件管理 + 前端动态加载；已移入 P3 待办池（§5.9） |
@@ -84,14 +83,14 @@
 
 | 区域 | 槽位 | 内容 |
 | --- | --- | --- |
-| 左栏 264–420px（默认 280，折叠 56px，<768px 抽屉） | `sidebar` | workspace/会话树、新建会话、设置入口、面板列表（plugins/schedules） |
-| 中央主区（keyed） | `main` | `conversation`（会话页） / `plugins` / `schedules`；`null` 即会话页 |
-| 右栏（≤70% 宽，<1024px 自动折叠） | `rightbar` | 按 session 的 dock：文件树、文档预览、终端、jobs |
-| 底部整宽条 | `shell.bottom` | 出厂为空，供插件使用 |
-| 全帧浮层 | `shell.overlay` | toast / badge / onboarding |
-| 窗口左上 | `shell.leading` | 折叠恢复按钮、新建会话（macOS 红绿灯旁） |
+| 最左活动栏 48px | `activitybar` | 资源管理器 / 设置；点击资源管理器图标可折叠左侧栏 |
+| 左侧资源管理器 180–420px（默认 260） | `explorer` | 文件树 + 新建工作区（会话管理不在此处） |
+| 中央编辑区 | `editor` | tab：对话 / 文件预览 / 子会话副本；对话为默认 tab |
+| 中央底部面板 140–560px（默认 210） | `bottom-panel` | tab：输入（Composer）/ 终端 / 后台任务 / 计划，可折叠、可拖高 |
+| 右侧会话面板 240–460px（默认 300） | `sessionpane` | 会话搜索、新建会话、工作区与会话列表、置顶/fork；可折叠、可拖宽 |
+| 全宽状态栏 30px | `statusbar` | 连接状态、Host、generation、会话/终端开关、重连、设置 |
 
-没有独立状态栏与命令面板：状态信息走 header 内的 `ContextMeter`、`ConnectionIndicator`；命令分 `ui-commands`（slash command）与 `ui-shortcuts`（快捷键参考）。
+结构对齐 CodeBuddy/VS Code：活动栏 + 资源管理器 + 编辑区 + 底部集成面板 + 右侧面板 + 状态栏。dsh 没有编辑器，编辑区承载会话与只读预览，输入区在底部面板。
 
 ### 3.2 视图清单
 
@@ -104,7 +103,7 @@
 | 设置 | `ui-settings-general` 壳 + 各 `ui-settings-*` | 分区：Account / General / Models / Plugins / Agent presets |
 | 插件管理 | `ui-plugin-manager` | 主面板 `plugins`（P3） |
 | 定时任务 | `ui-schedule` | 主面板 `schedules`（P3） |
-| 右栏 tab | `ui-sidebar-{files,documentpreview,terminal,browser}`、`ui-schedule` | 文件树 / 文档预览 / 终端 / 浏览器 / 任务（终端与任务 P3） |
+| 底部面板 | `bottom-panel` | 终端 / 后台任务 / 计划（替代上游右栏 tab，对齐 VS Code 集成面板） |
 | 会话内浮层 | `ui-approval`、`ui-user-questions`、`ui-plan`、`ui-goal`、`ui-jobs`、`ui-model-selection`、`ui-permission-presets`、`ui-message-feedback`、`ui-deliverables`、`ui-attachment` | 审批、提问、计划、目标、任务、模型选择、权限预设、反馈、变更文件卡、附件 |
 
 ### 3.3 数据流（上游）
@@ -227,7 +226,7 @@ Host 权威状态 → Remote（HTTP unary / WS stream）→ Client model（React
 
 | ID | 需求 | 优先级 | 验收要点 |
 | --- | --- | --- | --- |
-| F-60 | 三栏布局：左栏折叠/拖拽调宽、右栏 dock、窄屏自适应 | P0（已实现） | 1280 / 1024 / 768 三档不破版 |
+| F-60 | CodeBuddy 式工作台：活动栏 + 文件资源管理器 + 编辑区（对话 tab）+ 底部输入/终端 + 右侧会话面板 + 状态栏 | P0（已实现） | 三处拖拽调宽/调高、底部与会话面板可折叠；1280 / 1024 不破版 |
 | F-61 | 主题 light/dark/system + 字号（正文/代码/终端）+ 字体族 | P0（已实现正文/代码；终端随 P3） | 切换即时生效并持久化到 Host settings |
 | F-62 | 设置页：General / Models / Agent presets / About | P1（已实现） | 读写 `settings/describe\|update` |
 | F-63 | 语言切换（zh / en） | P1（已实现） | 切换后界面文案即时更新 |
@@ -235,16 +234,16 @@ Host 权威状态 → Remote（HTTP unary / WS stream）→ Client model（React
 | F-64 | 快捷键（新建会话、切换栏、发送、打开设置等） | P3 | 非多 Agent 主线，见 §5.9 |
 | F-65 | 首帧不闪白（boot 前落地主题变量） | P1（已实现） | 深色系统下首屏直接深色 |
 
-### 5.7 右栏与辅助视图
+### 5.7 编辑区与辅助视图
 
 | ID | 需求 | 优先级 | 验收要点 |
 | --- | --- | --- | --- |
-| F-70 | 文件树（懒加载、搜索、右键菜单） | P1（已实现） | 与 `workspaceFiles/list` 一致 |
-| F-71 | 文档预览：文本文件 | P2（已实现） | 右栏可读文本；大文件有上限提示 |
+| F-70 | 文件树（懒加载、搜索、右键菜单） | P1（已实现） | 左侧资源管理器；与 `workspaceFiles/list` 一致 |
+| F-71 | 文档预览：文本文件 | P2（已实现） | 中间编辑区可读文本；带语法高亮与复制 |
 | F-71b | 文档预览：图片 / PDF / 二进制 | P3 | 需新增解码与渲染链路，见 §5.9 |
 | F-72 | Trajectory 视图（turn/step/工具/用量） | P1（已实现） | 按 turn 分组、显示 step/用量/耗时；点击回跳消息 |
 | F-73 | Jobs 列表与终止 | P3 | 见 §5.9 |
-| F-74 | 终端 | P3（本期不做） | 需双向 uplink + ANSI 渲染，见 §5.9 |
+| F-74 | 终端 | P2（MVP 已实现） | 底部「终端」tab：`terminal/list\|create\|attach\|close`；ANSI SGR 渲染；输入按 `sequence` 走 uplink；切会话断流但保留 Host 进程 |
 
 ### 5.8 智能体与运维类面板
 
@@ -266,7 +265,6 @@ Host 权威状态 → Remote（HTTP unary / WS stream）→ Client model（React
 | F-64 | 快捷键 | 独立基建，需与上游 `shortcuts` 默认键位逐条对齐 |
 | F-71b | 图片 / PDF 预览 | 需要图片解码、PDF 渲染与二进制读取链路 |
 | F-73 | Jobs 列表与终止 | 依赖 Host jobs RPC |
-| F-74 | 终端 | 需双向 uplink 流 + xterm 级 ANSI 渲染，成本最高 |
 | F-80 | 插件管理 / 市场 | 依赖 Host 插件管理 RPC 与动态插件语义（与静态组件树取向冲突） |
 | F-81 | 定时任务面板 | 依赖 schedule 域 |
 | F-82 | 账号 | 依赖 DeepSeek 账号与计费链路 |
@@ -379,11 +377,12 @@ Host 权威状态 → Remote（HTTP unary / WS stream）→ Client model（React
 
 **仍待确认**：
 
-1. 其余 endpoint 的 `args` 键集合（`commands/execute`、`workspaceFiles/read`、`terminal/attach`、`fileUploads/upload`）——按同样方法逐个探测，或 dump `lib/typert.host.js` 的 descriptor。
+1. 其余 endpoint 的 `args` 键集合（`commands/execute`、`workspaceFiles/read`、`fileUploads/upload`）——按同样方法逐个探测，或 dump `lib/typert.host.js` 的 descriptor。
 2. `permessage-deflate` 协商行为（Host 默认 `deflate`；目前首帧正常，长帧未压测）。
 3. 二进制结果（multipart）在 Rust 端的解析（按 part 名而非顺序）。
-4. `terminal` 的 `id` 校验规则（客户端 mint）。
-5. Web profile 下各 namespace 的实际可用方法集（缺失 provider 时的错误形态）。
+4. Web profile 下各 namespace 的实际可用方法集（缺失 provider 时的错误形态）。
+
+终端已实测（`examples/terminal-probe.rs`）：`environment` 用 `{agentId}`、`create` 用 `{agentId, request}`、`attach` 用 `{agentId, id}`；`id` 客户端 mint，规则 `^[\w-]{1,128}$`。
 
 ---
 

@@ -13,10 +13,12 @@ pub mod endpoint;
 pub mod envelope;
 pub mod events;
 pub mod interaction;
+pub mod llm;
 pub mod session;
 pub mod settings;
 pub mod stream;
 pub mod subagent;
+pub mod terminal;
 pub mod workspace;
 
 pub use envelope::{Args, ClientRequest, RpcError, RpcResult, ServerResponse};

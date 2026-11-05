@@ -43,6 +43,8 @@ fn markup_for(glyph: &str) -> &'static str {
         "graph-outline" => SVG_GRAPH_OUTLINE,
         "panel-right-outline" => SVG_PANEL_LEFT_OUTLINE,
         "refresh-outline" => SVG_REFRESH_OUTLINE,
+        "folder-outline" => SVG_FOLDER_OUTLINE,
+        "terminal-outline" => SVG_TERMINAL_OUTLINE,
         _ => "",
     }
 }
@@ -74,3 +76,7 @@ const SVG_BRANCH_OUTLINE: &str = r#"<path d="M1.01503 8.0001L5.6964 8.0001C6.419
 const SVG_REFRESH_OUTLINE: &str = r#"<path d="M13.4 6.6A5.5 5.5 0 1 0 13.5 9.2" stroke="currentColor"></path><path d="M13.5 2.4V6.6H9.3" stroke="currentColor"></path>"#;
 
 const SVG_GRAPH_OUTLINE: &str = r#"<circle cx="3" cy="3.5" r="1.4" stroke="currentColor"></circle><circle cx="13" cy="4" r="1.4" stroke="currentColor"></circle><circle cx="7.5" cy="13" r="1.4" stroke="currentColor"></circle><path d="M4.4 3.9 11.6 4M3.8 4.8 6.8 11.7M12.1 5.3 8.6 11.8" stroke="currentColor"></path>"#;
+
+const SVG_FOLDER_OUTLINE: &str = r#"<path d="M2 4.5C2 3.94772 2.44772 3.5 3 3.5H6.29289C6.55811 3.5 6.81246 3.60536 7 3.79289L8.20711 5H13C13.5523 5 14 5.44772 14 6V11.5C14 12.0523 13.5523 12.5 13 12.5H3C2.44772 12.5 2 12.0523 2 11.5V4.5Z" stroke="currentColor" stroke-linejoin="round"></path>"#;
+
+const SVG_TERMINAL_OUTLINE: &str = r#"<path d="M2.5 3.5H13.5C14.0523 3.5 14.5 3.94772 14.5 4.5V11.5C14.5 12.0523 14.0523 12.5 13.5 12.5H2.5C1.94772 12.5 1.5 12.0523 1.5 11.5V4.5C1.5 3.94772 1.94772 3.5 2.5 3.5Z" stroke="currentColor"></path><path d="M4.4 6.6L6.6 8.4L4.4 10.2" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"></path><path d="M8.2 10.4H11.4" stroke="currentColor" stroke-linecap="round"></path>"#;

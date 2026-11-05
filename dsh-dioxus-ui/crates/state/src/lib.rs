@@ -45,15 +45,36 @@ pub struct LiveAttempt {
     pub next_index: u64,
     /// 已累积的文本（从 `type == "text"` 的 chunk 里抽取）。
     pub text: String,
+    /// 已累积的思考过程（`reasoning` / `reasoning-delta`）。
+    pub reasoning: String,
     /// 原始 chunk，便于调试与兜底重建。
     pub chunks: Vec<Value>,
 }
 
 /// 从一个 chunk 里抽取可显示文本；非文本 chunk 忽略。
+///
+/// 线上流式正文是 `text-delta`（增量），`text` 是整块形态，两者都要接。
 fn append_text(target: &mut String, chunk: &Value) {
-    if chunk.get("type").and_then(Value::as_str) == Some("text")
-        && let Some(text) = chunk.get("text").and_then(Value::as_str)
-    {
+    if !matches!(
+        chunk.get("type").and_then(Value::as_str),
+        Some("text") | Some("text-delta")
+    ) {
+        return;
+    }
+    if let Some(text) = chunk.get("text").and_then(Value::as_str) {
+        target.push_str(text);
+    }
+}
+
+/// 思考过程与正文分开累积：reasoning 模型会先吐 `reasoning-delta`。
+fn append_reasoning(target: &mut String, chunk: &Value) {
+    if !matches!(
+        chunk.get("type").and_then(Value::as_str),
+        Some("reasoning") | Some("reasoning-delta")
+    ) {
+        return;
+    }
+    if let Some(text) = chunk.get("text").and_then(Value::as_str) {
         target.push_str(text);
     }
 }
@@ -95,17 +116,23 @@ impl SessionView {
                 // revision 在 baseline 上，不在 attempt 内
                 self.live = assistant_stream.and_then(|baseline| {
                     let revision = baseline.revision;
-                    baseline.active_attempt.map(|attempt| LiveAttempt {
-                        attempt_id: attempt.attempt_id,
-                        revision,
-                        turn: attempt.turn,
-                        step: attempt.step,
-                        next_index: attempt.next_index,
-                        text: attempt.stream.iter().fold(String::new(), |mut acc, chunk| {
-                            append_text(&mut acc, chunk);
-                            acc
-                        }),
-                        chunks: attempt.stream,
+                    baseline.active_attempt.map(|attempt| {
+                        let mut text = String::new();
+                        let mut reasoning = String::new();
+                        for chunk in &attempt.stream {
+                            append_text(&mut text, chunk);
+                            append_reasoning(&mut reasoning, chunk);
+                        }
+                        LiveAttempt {
+                            attempt_id: attempt.attempt_id,
+                            revision,
+                            turn: attempt.turn,
+                            step: attempt.step,
+                            next_index: attempt.next_index,
+                            text,
+                            reasoning,
+                            chunks: attempt.stream,
+                        }
                     })
                 });
                 Applied::Snapshot
@@ -162,6 +189,7 @@ impl SessionView {
                     step,
                     next_index: 0,
                     text: String::new(),
+                    reasoning: String::new(),
                     chunks: Vec::new(),
                 });
             }
@@ -175,17 +203,31 @@ impl SessionView {
                 let Some(live) = self.live.as_mut() else {
                     return;
                 };
-                if live.attempt_id != attempt_id || live.revision != revision {
-                    // 属于别的 attempt（例如重连前的残留），丢弃
+                // Revision 是「流事件版本号」，每个 chunk 都会自增（实测 1→2→3…），
+                // 不能拿它判断归属；attemptId 才是这次尝试的身份。
+                if live.attempt_id != attempt_id {
+                    return;
+                }
+                if index < live.next_index {
+                    // 重复/过期 chunk
                     return;
                 }
                 append_text(&mut live.text, &chunk);
+                append_reasoning(&mut live.reasoning, &chunk);
                 live.chunks.push(chunk);
+                live.revision = revision;
                 live.next_index = index.saturating_add(1);
             }
-            AssistantStreamFrame::End { .. } => {
-                // 提交后的事件会以 durable 形式随后到达，这里只清掉临时态
-                self.live = None;
+            AssistantStreamFrame::End { attempt_id, .. } => {
+                // 提交后的事件会以 durable 形式随后到达，这里只清掉临时态；
+                // 旧 attempt 的 end 不能清掉新 attempt。
+                if self
+                    .live
+                    .as_ref()
+                    .is_some_and(|live| live.attempt_id == attempt_id)
+                {
+                    self.live = None;
+                }
             }
         }
     }
@@ -366,6 +408,55 @@ mod tests {
                        "outcome": { "kind": "committed", "eventType": "assistant/message", "seq": 1 } }
         })));
         assert!(view.live.is_none(), "流式结束后应清理临时态");
+    }
+
+    #[test]
+    fn reasoning_deltas_are_collected_separately() {
+        let mut view = SessionView::new();
+        view.apply(snapshot(json!([]), 0));
+        view.apply(frame(json!({
+            "type": "assistant-stream",
+            "frame": { "type": "start", "attemptId": "a1", "revision": 1,
+                       "startedAfterSeq": 0, "turn": 1, "step": 1 }
+        })));
+        view.apply(frame(json!({
+            "type": "assistant-stream",
+            "frame": { "type": "chunk", "attemptId": "a1", "revision": 1,
+                       "index": 0, "time": 0,
+                       "chunk": { "type": "reasoning-delta", "index": 0, "text": "先想" } }
+        })));
+        view.apply(frame(json!({
+            "type": "assistant-stream",
+            "frame": { "type": "chunk", "attemptId": "a1", "revision": 1,
+                       "index": 1, "time": 1,
+                       "chunk": { "type": "text-delta", "index": 1, "text": "再说" } }
+        })));
+
+        let live = view.live.as_ref().expect("应有进行中的 attempt");
+        assert_eq!(live.reasoning, "先想");
+        assert_eq!(live.text, "再说");
+    }
+
+    #[test]
+    fn per_chunk_revision_increments_do_not_drop_frames() {
+        let mut view = SessionView::new();
+        view.apply(snapshot(json!([]), 0));
+        view.apply(frame(json!({
+            "type": "assistant-stream",
+            "frame": { "type": "start", "attemptId": "a1", "revision": 1,
+                       "startedAfterSeq": 0, "turn": 1, "step": 1 }
+        })));
+        for (index, (revision, piece)) in [(2, "po"), (3, "ng")].into_iter().enumerate() {
+            view.apply(frame(json!({
+                "type": "assistant-stream",
+                "frame": { "type": "chunk", "attemptId": "a1", "revision": revision,
+                           "index": index as u64, "time": index as u64,
+                           "chunk": { "type": "text-delta", "text": piece } }
+            })));
+        }
+        let live = view.live.as_ref().expect("应有进行中的 attempt");
+        assert_eq!(live.text, "pong");
+        assert_eq!(live.revision, 3);
     }
 
     #[test]

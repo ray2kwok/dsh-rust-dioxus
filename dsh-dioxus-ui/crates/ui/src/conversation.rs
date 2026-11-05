@@ -8,6 +8,7 @@ use crate::composer::{CommandItemView, Composer, FileRefItemView};
 use crate::i18n::{self, Key, use_t};
 use crate::icons::Icon;
 use crate::markdown::MarkdownView;
+use crate::math::MathText;
 use crate::model::{
     ApprovalItem, ConnectionState, MessageRow, PlanState, QuestionCard, QueueItem, Role, SendMode,
     SendRequest, SubagentMode, SubagentRow, TrajectoryRow,
@@ -94,6 +95,10 @@ pub fn ConversationView(
     #[props(default = EventHandler::new(|_| {}))] on_subagent_open: EventHandler<SubagentRow>,
     #[props(default = EventHandler::new(|_| {}))] on_subagent_aside: EventHandler<SubagentRow>,
     #[props(default = EventHandler::new(|_| {}))] on_subagent_refresh: EventHandler<()>,
+    /// 输入区是否随会话渲染。CodeBuddy 布局把 Composer 移到了底部面板，
+    /// 这里传 `false`，只保留消息流与 header。
+    #[props(default = true)]
+    show_composer: bool,
 ) -> Element {
     let t = use_t();
     let mut tab = use_signal(|| 0u8);
@@ -389,26 +394,28 @@ pub fn ConversationView(
                 QuestionCardView { key: "{card.event_id}", card: card.clone(), on_answer }
             }
 
-            Composer {
-                can_send,
-                running,
-                send_mode,
-                notice: read_only_reason.map(|reason| t.get(reason).to_string()),
-                can_stop: subagent_mode.map(SubagentMode::is_continuable).unwrap_or(false),
-                commands: commands.clone(),
-                file_refs: file_refs.clone(),
-                models: models.clone(),
-                selected_model: selected_model.clone(),
-                permissions: permissions.clone(),
-                selected_permission: selected_permission.clone(),
-                plan,
-                on_send,
-                on_mode,
-                on_cancel,
-                on_model,
-                on_permission,
-                on_command_query,
-                on_file_query,
+            if show_composer {
+                Composer {
+                    can_send,
+                    running,
+                    send_mode,
+                    notice: read_only_reason.map(|reason| t.get(reason).to_string()),
+                    can_stop: subagent_mode.map(SubagentMode::is_continuable).unwrap_or(false),
+                    commands: commands.clone(),
+                    file_refs: file_refs.clone(),
+                    models: models.clone(),
+                    selected_model: selected_model.clone(),
+                    permissions: permissions.clone(),
+                    selected_permission: selected_permission.clone(),
+                    plan,
+                    on_send,
+                    on_mode,
+                    on_cancel,
+                    on_model,
+                    on_permission,
+                    on_command_query,
+                    on_file_query,
+                }
             }
         }
     }
@@ -480,18 +487,58 @@ fn MessageItem(
                     }
                 }
             }
+            if let Some(reasoning) = message.reasoning.clone() {
+                ReasoningBlock { text: reasoning, streaming: message.streaming }
+            }
             if message.role == Role::Tool {
                 ToolCard {
                     name: message.tool_name.clone().unwrap_or_else(|| "tool".to_string()),
                     body: message.text.clone(),
                 }
+            } else if message.role == Role::User {
+                // 用户输入按纯文本渲染（`*`/`#` 都是原话），但 `$…$` 公式照常渲染。
+                div { class: "msg__body msg__body--plain",
+                    MathText { text: message.text.clone() }
+                }
             } else {
                 div { class: "msg__body",
-                    MarkdownView { source: message.text.clone(), on_file_ref }
+                    if !message.text.is_empty() {
+                        MarkdownView { source: message.text.clone(), on_file_ref }
+                    }
                     if message.streaming {
                         span { class: "caret" }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// 思考过程：流式时默认展开，完成后默认折叠。
+#[component]
+fn ReasoningBlock(text: String, #[props(default = false)] streaming: bool) -> Element {
+    let t = use_t();
+    let mut open = use_signal(move || streaming);
+    let count = text.chars().count();
+
+    rsx! {
+        div { class: "msg-reasoning",
+            button {
+                class: "msg-reasoning__head",
+                onclick: move |_| open.toggle(),
+                Icon {
+                    glyph: if open() { "chevron-down-outline" } else { "chevron-right-outline" },
+                    size: 11.0,
+                }
+                span { "{t.tr(\"思考\", \"Thinking\")}" }
+                if streaming {
+                    span { class: "msg-reasoning__live", "…" }
+                }
+                span { class: "spacer" }
+                span { class: "muted", "{count}" }
+            }
+            if open() {
+                div { class: "msg-reasoning__body", "{text}" }
             }
         }
     }

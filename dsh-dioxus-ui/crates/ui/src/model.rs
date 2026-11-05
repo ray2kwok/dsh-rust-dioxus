@@ -50,6 +50,8 @@ pub struct MessageRow {
     pub message_id: Option<String>,
     pub role: Role,
     pub text: String,
+    /// 思考过程（reasoning 模型）；与正文分开展示。
+    pub reasoning: Option<String>,
     pub streaming: bool,
     pub tool_name: Option<String>,
 }
@@ -61,9 +63,15 @@ impl MessageRow {
             message_id: None,
             role,
             text: text.into(),
+            reasoning: None,
             streaming: false,
             tool_name: None,
         }
+    }
+
+    pub fn reasoning(mut self, reasoning: impl Into<String>) -> Self {
+        self.reasoning = Some(reasoning.into());
+        self
     }
 
     pub fn streaming(mut self, streaming: bool) -> Self {
@@ -225,6 +233,28 @@ pub struct FileEntry {
     pub is_dir: bool,
 }
 
+/// 右栏预览：文件路径 + 内容（用于按扩展名选高亮语言）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreviewDoc {
+    pub path: String,
+    pub text: String,
+    /// 读取失败等场景下只展示文本，不做高亮。
+    pub error: bool,
+}
+
+/// 后台任务（`job/registered` → `job/settled`）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct JobRow {
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+    /// `running` / `completed` / `failed` / `killed` / …
+    pub status: String,
+    pub started_at: u64,
+    pub finished_at: Option<u64>,
+    pub detail: Option<String>,
+}
+
 /// 一个待回答的问题（来自 `user-questions/request` waterfall）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct QuestionItemView {
@@ -324,6 +354,27 @@ pub struct SubagentRow {
 impl SubagentRow {
     pub fn is_running(&self) -> bool {
         self.state == SubagentState::Running
+    }
+}
+
+/// 右栏用户终端（`terminal/*`）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TerminalView {
+    pub id: String,
+    pub title: String,
+    pub cwd: String,
+    pub state: String,
+    pub writable: bool,
+    pub cols: u32,
+    pub rows: u32,
+    /// 累积的 ANSI 屏幕文本（snapshot 覆盖、output 追加）。
+    pub screen: String,
+    pub error: Option<String>,
+}
+
+impl TerminalView {
+    pub fn is_running(&self) -> bool {
+        self.state == "running"
     }
 }
 

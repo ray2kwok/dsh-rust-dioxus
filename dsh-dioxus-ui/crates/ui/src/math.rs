@@ -83,6 +83,13 @@ fn parse(tex: &str) -> Vec<Piece> {
                     text.push_str(&value);
                     index = next;
                 }
+                // 间距命令：\, \; \: 常见于公式里的分隔，不能原样显示成 "\,"。
+                "," => text.push('\u{2009}'),
+                ":" | " " => text.push(' '),
+                ";" => text.push('\u{2002}'),
+                "quad" => text.push_str("  "),
+                "qquad" => text.push_str("    "),
+                "!" => {}
                 other => {
                     if let Some(value) = symbol(other) {
                         text.push_str(value);
@@ -235,6 +242,91 @@ fn symbol(command: &str) -> Option<&'static str> {
     })
 }
 
+/// 一段纯文本里的数学片段：`$…$` 行内、`$$…$$` 块级，其余原样保留。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MathChunk {
+    Text(String),
+    Inline(String),
+    Display(String),
+}
+
+/// 按 `$`/`$$` 切分纯文本（用户输入不解析 Markdown，但公式要认）。
+pub fn split_math(text: &str) -> Vec<MathChunk> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut chunks = Vec::new();
+    let mut buffer = String::new();
+    let mut index = 0;
+
+    while index < chars.len() {
+        if chars[index] != '$' {
+            buffer.push(chars[index]);
+            index += 1;
+            continue;
+        }
+        let display = index + 1 < chars.len() && chars[index + 1] == '$';
+        let width = if display { 2 } else { 1 };
+        let start = index + width;
+        match find_close(&chars, start, width) {
+            Some(end) if end > start => {
+                if !buffer.is_empty() {
+                    chunks.push(MathChunk::Text(std::mem::take(&mut buffer)));
+                }
+                let tex: String = chars[start..end].iter().collect();
+                chunks.push(if display {
+                    MathChunk::Display(tex)
+                } else {
+                    MathChunk::Inline(tex)
+                });
+                index = end + width;
+            }
+            _ => {
+                buffer.push(chars[index]);
+                index += 1;
+            }
+        }
+    }
+    if !buffer.is_empty() {
+        chunks.push(MathChunk::Text(buffer));
+    }
+    chunks
+}
+
+fn find_close(chars: &[char], mut index: usize, width: usize) -> Option<usize> {
+    while index < chars.len() {
+        if chars[index] == '$' {
+            if width == 1 {
+                return Some(index);
+            }
+            if chars.get(index + 1) == Some(&'$') {
+                return Some(index);
+            }
+        }
+        index += 1;
+    }
+    None
+}
+
+/// 用户消息：纯文本 + 公式。
+#[component]
+pub fn MathText(text: String) -> Element {
+    let chunks = split_math(&text);
+    rsx! {
+        for (index, chunk) in chunks.iter().enumerate() {
+            {
+                match chunk {
+                    MathChunk::Text(value) => rsx! { span { key: "{index}", "{value}" } },
+                    MathChunk::Inline(tex) => rsx! {
+                        MathView { key: "{index}", tex: tex.clone(), display: false }
+                    },
+                    MathChunk::Display(tex) => rsx! {
+                        MathView { key: "{index}", tex: tex.clone(), display: true }
+                    },
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,5 +362,38 @@ mod tests {
         let pieces = parse(r"\unknown{x}");
         let text = simple_text(&pieces);
         assert!(text.contains("\\unknown"));
+    }
+
+    #[test]
+    fn splits_inline_and_display_math() {
+        let chunks = split_math("前 $a^2$ 后 $$\\int_0^1$$ 尾");
+        assert_eq!(
+            chunks,
+            vec![
+                MathChunk::Text("前 ".into()),
+                MathChunk::Inline("a^2".into()),
+                MathChunk::Text(" 后 ".into()),
+                MathChunk::Display("\\int_0^1".into()),
+                MathChunk::Text(" 尾".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn unmatched_dollar_stays_text() {
+        let chunks = split_math("价格 $5 元");
+        assert_eq!(chunks, vec![MathChunk::Text("价格 $5 元".into())]);
+    }
+
+    #[test]
+    fn empty_formula_stays_text() {
+        assert_eq!(split_math("$$"), vec![MathChunk::Text("$$".into())]);
+    }
+
+    #[test]
+    fn spacing_commands_do_not_leak_backslashes() {
+        let text = simple_text(&parse(r"\int_0^1 x\,dx"));
+        assert!(text.contains('∫'));
+        assert!(!text.contains('\\'), "间距命令不应原样显示：{text}");
     }
 }

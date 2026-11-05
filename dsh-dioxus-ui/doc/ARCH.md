@@ -146,7 +146,7 @@
 | Markdown | `pulldown-cmark` | 0.13 | GFM：表格/任务列表/脚注/删除线；比 comrak 更省 |
 | 高亮 | `syntect` | 5.3 | 功能优先；语法集全量 |
 | Diff | `similar` | 3.x | hunk + 行内变更 |
-| ANSI | `vte` | — | 终端输出块（P3） |
+| ANSI | 自研最小解析（`dsh-render::ansi`） | — | 只做 SGR / 回车覆盖 / 制表；不建模光标 |
 | 进程 | `std::process::Command` + 读线程 | — | 拉起 Host，解析 stdout |
 | 构建 | `dx`（dioxus-cli） | 与框架同版本 | `dx build --platform desktop --release` |
 
@@ -335,7 +335,7 @@ call("session/prompt", args_json)
 
 - `open(endpoint, payload)` 生成 `streamId = uuid`，注册 `mpsc::UnboundedSender<StreamEvent>`，返回 `StreamHandle`（`cancel()` / `send_item()` / `end()`）。
 - 单条 WS 承载全部流；读任务把 `item/error/end` 按 `streamId` 分发。
-- 上行 `item` 仅 `terminal/attach` 等需要（本期不用）。
+- 上行 `item` 用于双向流（目前是 `terminal/attach` 的 `TerminalInput`）：`StreamHandle::uplink()` 取可克隆发送端，读任务仍独占 `StreamHandle`。
 
 ### 8.4 重连与 generation
 
@@ -821,14 +821,16 @@ dx build --platform desktop --release
 > | M0 打通 | ✅ | 握手 → list → create → follow → `SessionView` → 渲染，全部对真实 Host 验证 |
 > | M1 渲染 | ✅ | Markdown、diff 解析、零依赖高亮、通用工具卡、流式合批 |
 > | M2 交互 | ✅ | 审批闭环 + `$events/result`（含幂等实测）；ask-question（选项 + 自定义回答）；queue/steer 与队列管理（`session/updateQueue` + `inbox` projection） |
-> | M3 可用 | ✅（核心） | 三栏（折叠/拖拽调宽/窄屏规则）+ 主题切换 + 完整设置页 + 轨迹视图；视觉对齐上游 token；
+> | M3 可用 | ✅（核心） | CodeBuddy 式工作台（活动栏 / 文件资源管理器 / 编辑区对话 tab / 底部输入与终端 / 右侧会话面板 / 状态栏，三处拖拽调宽）+ 主题切换 + 完整设置页 + 轨迹视图；视觉对齐上游 token；
 > 字号/字体族与主题持久化到 Host `ui-theme`；搜索、置顶/fork、workspace 增删改/按钮排序、
 > 附件、`@` 与斜杠命令、模型/权限选择、文件引用、轻量公式、消息复制/重试/反馈、plan 卡片、
 > 文件树（懒加载/搜索/右键）、Trajectory 聚合均已接通。
 > F-15 为按钮排序、F-16 为轻量状态；完整 i18n 字典已移 P3；S1–S7 真机手工清单仍待跑 |
-> | M4 多 Agent（P2 主线） | ◐ | P2-1～P2-4 已落地：projection 类型、地址化 follow/分页、子 Agent 目录树（列表 / 关系图切换 + 独立入口）、续聊/独立停止、只读态、`session/control` 实时状态、侧栏过滤、右栏侧开；目录读取失败与迁移态已显示入口/提示。**待做**：真实子 Agent 会话端到端（模型派生子 Agent）、S9 手工清单 |
+> | M4 多 Agent（P2 主线） | ◐ | P2-1～P2-4 已落地：projection 类型、地址化 follow/分页、子 Agent 目录树（列表 / 关系图切换 + 独立入口）、续聊/独立停止、只读态、`session/control` 实时状态、侧栏过滤、编辑区侧开；目录读取失败与迁移态已显示入口/提示。**待做**：真实子 Agent 会话端到端（模型派生子 Agent）、S9 手工清单 |
+> | 终端（P2 追加） | ✅（MVP） | `terminal/*` 协议 + `terminal/attach` 双向流 + 底部集成面板 + 最小 ANSI 渲染；`examples/terminal-probe.rs` 端到端验证 create/attach/输入/输出/close |
+> | 布局 | ✅ | 对齐 CodeBuddy：活动栏 + 文件资源管理器（含新建工作区）+ 编辑区 tab（对话/预览/子会话）+ 底部输入/终端/任务/计划 + 右侧会话面板 + 状态栏 |
 > | M5 打磨 | ◐ | 消息渲染窗口化（最近 300 条）+ release 4.7MB + 冒烟脚本；**待做**：真虚拟列表、内存曲线 |
-> | P3 后续 | — | 图片/PDF 预览、终端、Jobs、插件/定时/账号等（PR §5.9）；附件与 @ 引用、搜索仍属 P1，随 M4 并行 |
+> | P3 后续 | — | 图片/PDF 预览、Jobs、插件/定时/账号等（PR §5.9）；附件与 @ 引用、搜索仍属 P1，随 M4 并行 |
 >
 > 已实测的健壮性：杀掉 Host → 500ms 退避 → 新 Host → generation+1；手动重连按钮同样走这条路径。
 
@@ -841,7 +843,7 @@ dx build --platform desktop --release
 | M0-5 | 最小 UI：会话列表 + 纯文本消息 + 输入框 | `crates/ui` |
 | M1 | `dsh-render`（Markdown/代码/diff）+ 工具卡 + 流式 + 中断 | `crates/render`、`crates/ui` |
 | M2 | 审批 / 提问 / 队列 / steer / overlay 层 | `crates/ui/overlays` |
-| M3 | 三栏布局 + 主题 + 会话管理 + 设置 + i18n | `crates/ui/src/{layout,settings,composer,file_tree,sidebar}.rs` |
+| M3 | CodeBuddy 式工作台 + 主题 + 会话管理 + 设置 + i18n | `crates/ui/src/{layout,settings,composer,file_tree,sidebar,editor}.rs` |
 | M4 | 多 Agent 协作/集群：子 Agent 目录、子会话导航、续聊与独立停止、列表隔离 | `crates/proto/src/subagent.rs`、`crates/runtime`、`crates/ui/src/{conversation,subagent}.rs` |
 | M5 | 虚拟列表、体积与内存、重连鲁棒性、e2e 固化 | 全局 |
 | P3 | 图片/PDF 预览、终端、Jobs、插件/定时/账号 | 按需（见 PR §5.9） |
@@ -886,6 +888,6 @@ dx build --platform desktop --release
 
 1. 其余 endpoint 的 `args` 键集合（`commands/execute`、`workspaceFiles/read`、`terminal/attach`、`fileUploads/upload`），按同一方法逐个探测。
 2. `permessage-deflate` 在长帧上的表现（首帧已验证正常）。
-3. `assistant-stream` 是否可能乱序/缺口（上游有 `index`/`revision`；重连时能否只用 `assistant/message.stream` 重建）。
+3. `assistant-stream` 已实测：`revision` **每个 chunk 自增**（1→2→3…），不能用来判断归属；身份是 `attemptId`，顺序用稠密 `index`。客户端只按 `attemptId` 过滤，并丢弃 `index < nextIndex` 的重复帧。
 5. 上游 `--dsw-*` token 与组件 CSS 是否存在依赖 React 结构的样式（需逐文件迁移验证）。
 6. Linux 上 `dx build --platform desktop` 的打包产物在无 Node 环境的机器上是否只需系统 WebView（需在干净镜像验证）。

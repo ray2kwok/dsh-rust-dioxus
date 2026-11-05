@@ -29,12 +29,24 @@ pub enum Block {
     },
     List {
         ordered: bool,
-        items: Vec<Vec<Inline>>,
+        items: Vec<ListItem>,
     },
     Quote {
         inlines: Vec<Inline>,
     },
+    /// 表格：首行是表头，其余是数据行；单元格里只保留行内元素。
+    Table {
+        head: Vec<Vec<Inline>>,
+        rows: Vec<Vec<Vec<Inline>>>,
+    },
     Rule,
+}
+
+/// 一个列表项；`depth` 从 0 开始，嵌套列表逐层 +1。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ListItem {
+    pub depth: usize,
+    pub inlines: Vec<Inline>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -43,6 +55,7 @@ pub enum Inline {
     Code(String),
     Strong(Vec<Inline>),
     Emphasis(Vec<Inline>),
+    Strike(Vec<Inline>),
     Link {
         href: String,
         children: Vec<Inline>,
@@ -86,7 +99,11 @@ struct Builder {
     stack: Vec<InlineFrame>,
     heading: Option<u8>,
     quote_depth: u32,
-    list: Option<ListState>,
+    /// 列表栈：支持嵌套（深度 = 栈下标）。
+    lists: Vec<ListState>,
+    /// 进入嵌套列表时，暂存所属 item 已经累积的行内内容。
+    item_stack: Vec<Vec<Inline>>,
+    table: Option<TableState>,
     code: Option<CodeState>,
 }
 
@@ -98,13 +115,24 @@ struct InlineFrame {
 enum FrameKind {
     Strong,
     Emphasis,
+    Strike,
     Link(String),
     Image(String),
 }
 
 struct ListState {
     ordered: bool,
-    items: Vec<Vec<Inline>>,
+    items: Vec<ListItem>,
+    /// 刚结束的嵌套列表项：等外层 item 收尾后再追加，保证顺序。
+    pending: Vec<ListItem>,
+}
+
+#[derive(Default)]
+struct TableState {
+    head: Vec<Vec<Inline>>,
+    rows: Vec<Vec<Vec<Inline>>>,
+    row: Vec<Vec<Inline>>,
+    in_head: bool,
 }
 
 struct CodeState {
@@ -159,9 +187,13 @@ impl Builder {
                 });
             }
             Tag::List(start) => {
-                self.list = Some(ListState {
+                // 嵌套列表：先把外层 item 已写入的文字存起来，避免被内层 Item 清空
+                let saved = std::mem::take(&mut self.inlines);
+                self.item_stack.push(saved);
+                self.lists.push(ListState {
                     ordered: start.is_some(),
                     items: Vec::new(),
+                    pending: Vec::new(),
                 });
             }
             Tag::Item => {
@@ -173,10 +205,28 @@ impl Builder {
             }
             Tag::Strong => self.open_frame(FrameKind::Strong),
             Tag::Emphasis => self.open_frame(FrameKind::Emphasis),
+            Tag::Strikethrough => self.open_frame(FrameKind::Strike),
             Tag::Link { dest_url, .. } => self.open_frame(FrameKind::Link(dest_url.to_string())),
             Tag::Image { dest_url, .. } => self.open_frame(FrameKind::Image(dest_url.to_string())),
-            // 表格按普通行内文本处理
-            Tag::Table(_) | Tag::TableHead | Tag::TableRow | Tag::TableCell => {}
+            Tag::Table(_) => {
+                self.inlines.clear();
+                self.table = Some(TableState::default());
+            }
+            Tag::TableHead => {
+                self.inlines.clear();
+                if let Some(table) = self.table.as_mut() {
+                    table.in_head = true;
+                    table.row.clear();
+                }
+            }
+            Tag::TableRow => {
+                self.inlines.clear();
+                if let Some(table) = self.table.as_mut() {
+                    table.in_head = false;
+                    table.row.clear();
+                }
+            }
+            Tag::TableCell => self.inlines.clear(),
             _ => {}
         }
     }
@@ -198,16 +248,58 @@ impl Builder {
                 }
             }
             TagEnd::Item => {
-                let inlines = std::mem::take(&mut self.inlines);
-                if let Some(list) = self.list.as_mut() {
-                    list.items.push(trim_soft_breaks(inlines));
+                let inlines = trim_soft_breaks(std::mem::take(&mut self.inlines));
+                let depth = self.lists.len().saturating_sub(1);
+                if let Some(list) = self.lists.last_mut() {
+                    list.items.push(ListItem { depth, inlines });
+                    // 嵌套列表先于外层 item 结束，这里补到外层 item 之后
+                    let pending = std::mem::take(&mut list.pending);
+                    list.items.extend(pending);
                 }
             }
             TagEnd::List(_) => {
-                if let Some(list) = self.list.take() {
-                    self.blocks.push(Block::List {
-                        ordered: list.ordered,
-                        items: list.items,
+                if let Some(list) = self.lists.pop() {
+                    if let Some(parent) = self.lists.last_mut() {
+                        parent.pending.extend(list.items);
+                    } else {
+                        self.blocks.push(Block::List {
+                            ordered: list.ordered,
+                            items: list.items,
+                        });
+                    }
+                }
+                // 回到外层 item：恢复它在嵌套列表之前的文字
+                if let Some(saved) = self.item_stack.pop() {
+                    self.inlines = saved;
+                }
+            }
+            TagEnd::TableCell => {
+                let cell = trim_soft_breaks(std::mem::take(&mut self.inlines));
+                if let Some(table) = self.table.as_mut() {
+                    table.row.push(cell);
+                }
+            }
+            TagEnd::TableHead => {
+                if let Some(table) = self.table.as_mut() {
+                    table.head = std::mem::take(&mut table.row);
+                    table.in_head = false;
+                }
+            }
+            TagEnd::TableRow => {
+                if let Some(table) = self.table.as_mut() {
+                    let row = std::mem::take(&mut table.row);
+                    if !row.is_empty() {
+                        table.rows.push(row);
+                    }
+                }
+            }
+            TagEnd::Table => {
+                if let Some(table) = self.table.take()
+                    && (!table.head.is_empty() || !table.rows.is_empty())
+                {
+                    self.blocks.push(Block::Table {
+                        head: table.head,
+                        rows: table.rows,
                     });
                 }
             }
@@ -218,6 +310,7 @@ impl Builder {
             }
             TagEnd::Strong => self.close_frame(),
             TagEnd::Emphasis => self.close_frame(),
+            TagEnd::Strikethrough => self.close_frame(),
             TagEnd::Link => self.close_frame(),
             TagEnd::Image => self.close_frame(),
             _ => {}
@@ -229,7 +322,7 @@ impl Builder {
             return;
         }
         // 列表项内的段落不要生成独立块
-        if self.list.is_some() || self.quote_depth > 0 {
+        if !self.lists.is_empty() || self.quote_depth > 0 {
             self.inlines.push(Inline::SoftBreak);
             return;
         }
@@ -251,6 +344,7 @@ impl Builder {
         let node = match frame.kind {
             FrameKind::Strong => Inline::Strong(frame.buffer),
             FrameKind::Emphasis => Inline::Emphasis(frame.buffer),
+            FrameKind::Strike => Inline::Strike(frame.buffer),
             FrameKind::Link(href) => Inline::Link {
                 href,
                 children: frame.buffer,
@@ -298,7 +392,7 @@ fn plain_text(inlines: &[Inline]) -> String {
     for inline in inlines {
         match inline {
             Inline::Text(text) | Inline::Code(text) => out.push_str(text),
-            Inline::Strong(children) | Inline::Emphasis(children) => {
+            Inline::Strong(children) | Inline::Emphasis(children) | Inline::Strike(children) => {
                 out.push_str(&plain_text(children));
             }
             Inline::Link { children, .. } => out.push_str(&plain_text(children)),
@@ -356,6 +450,46 @@ mod tests {
                 assert_eq!(items.len(), 2);
             }
             other => panic!("期望 list，实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn nested_list_keeps_outer_items_and_depth() {
+        let doc = parse("- 一\n- 二\n  - 二点一\n- 三\n");
+        match &doc.blocks[0] {
+            Block::List { items, .. } => {
+                let texts: Vec<String> =
+                    items.iter().map(|item| plain_text(&item.inlines)).collect();
+                assert_eq!(texts, vec!["一", "二", "二点一", "三"], "外层项不能丢");
+                assert_eq!(items[2].depth, 1);
+                assert_eq!(items[3].depth, 0);
+            }
+            other => panic!("期望 list，实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_table_with_inline_code() {
+        let doc = parse("| 名称 | 类型 |\n| --- | --- |\n| `rust` | 语言 |\n");
+        match &doc.blocks[0] {
+            Block::Table { head, rows } => {
+                assert_eq!(head.len(), 2);
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].len(), 2);
+                assert!(matches!(rows[0][0].first(), Some(Inline::Code(code)) if code == "rust"));
+            }
+            other => panic!("期望 table，实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_strikethrough() {
+        let doc = parse("~~删除~~");
+        match &doc.blocks[0] {
+            Block::Paragraph { inlines } => {
+                assert!(inlines.iter().any(|item| matches!(item, Inline::Strike(_))));
+            }
+            other => panic!("期望 paragraph，实际 {other:?}"),
         }
     }
 

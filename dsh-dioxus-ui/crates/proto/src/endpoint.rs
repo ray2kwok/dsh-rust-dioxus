@@ -58,6 +58,20 @@ pub mod workspace {
     pub const UNPIN_SESSION: &str = "workspace/unpinSession";
 }
 
+/// 模型提供方目录。
+pub mod llm {
+    pub const LIST_PROVIDERS: &str = "llm/listProviders";
+    pub const LIST_CONFIGURABLE_PROVIDERS: &str = "llm/listConfigurableProviders";
+    pub const DISCOVER_MODELS: &str = "llm/discoverModels";
+}
+
+/// 凭据（API Key）。
+pub mod credentials {
+    pub const DESCRIBE: &str = "credentials/describe";
+    pub const SET: &str = "credentials/set";
+    pub const UNSET: &str = "credentials/unset";
+}
+
 /// 设置与凭据。
 pub mod settings {
     pub const DESCRIBE: &str = "settings/describe";
@@ -94,6 +108,21 @@ pub mod files {
 pub mod subagent {
     pub const PROMPT: &str = "subagents/prompt";
     pub const INTERRUPT_BY_PARENT: &str = "subagents/interruptByParent";
+}
+
+/// 用户终端（交互式 shell）。
+///
+/// 上游出处：`packages/api/terminal-controller/src/index.ts`。
+/// `agent` 形参线上是 `agentId`，`list` 用的是 `sessionId`。
+pub mod terminal {
+    pub const ENVIRONMENT: &str = "terminal/environment";
+    pub const SHELLS: &str = "terminal/shells";
+    pub const LIST: &str = "terminal/list";
+    pub const CREATE: &str = "terminal/create";
+    pub const RETAIN: &str = "terminal/retain";
+    pub const ATTACH: &str = "terminal/attach";
+    pub const RENAME: &str = "terminal/rename";
+    pub const CLOSE: &str = "terminal/close";
 }
 
 #[cfg(test)]

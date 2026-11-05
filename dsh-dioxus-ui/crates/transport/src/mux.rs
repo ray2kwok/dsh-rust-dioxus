@@ -54,12 +54,42 @@ impl StreamHandle {
 
     /// 主动取消（Host 侧收到后不再投递）。
     pub fn cancel(&self) {
-        let _ = self.control.send(MuxClientMsg::Cancel {
-            stream_id: self.stream_id.clone(),
-        });
+        self.uplink().cancel();
     }
 
     /// 上行一帧（仅带 uplink 的流使用，如 `terminal/attach`）。
+    pub fn send_item(&self, value: Value) {
+        self.uplink().send_item(value);
+    }
+
+    /// 上行半关闭。
+    pub fn end(&self) {
+        self.uplink().end();
+    }
+
+    /// 取一个可克隆的上行发送端：读任务持有 `StreamHandle` 时，
+    /// UI 仍可保留它发送输入（`terminal/attach` 的双向流需要）。
+    pub fn uplink(&self) -> StreamUplink {
+        StreamUplink {
+            stream_id: self.stream_id.clone(),
+            control: self.control.clone(),
+        }
+    }
+}
+
+/// 逻辑流的上行发送端（可跨任务克隆）。
+#[derive(Clone)]
+pub struct StreamUplink {
+    stream_id: String,
+    control: mpsc::UnboundedSender<MuxClientMsg>,
+}
+
+impl StreamUplink {
+    pub fn stream_id(&self) -> &str {
+        &self.stream_id
+    }
+
+    /// 上行一帧；流已关闭时静默丢弃（与 mux 的语义一致）。
     pub fn send_item(&self, value: Value) {
         let _ = self.control.send(MuxClientMsg::Item {
             stream_id: self.stream_id.clone(),
@@ -70,6 +100,13 @@ impl StreamHandle {
     /// 上行半关闭。
     pub fn end(&self) {
         let _ = self.control.send(MuxClientMsg::End {
+            stream_id: self.stream_id.clone(),
+        });
+    }
+
+    /// 取消该流（下行不再投递）。
+    pub fn cancel(&self) {
+        let _ = self.control.send(MuxClientMsg::Cancel {
             stream_id: self.stream_id.clone(),
         });
     }

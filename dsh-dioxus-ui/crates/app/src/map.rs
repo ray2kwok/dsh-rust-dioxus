@@ -4,6 +4,8 @@
 //! 而具体消息形状要等真实 prompt 事件才能确认。这里按
 //! 「已知字段优先、未知结构降级」的顺序提取，保证任何事件都能渲染出东西。
 
+use std::collections::HashMap;
+
 use dsh_proto::interaction::{
     AgentPresetRoster, CommandDescriptor, FileReferenceCandidate, ModelCatalog, PermissionCatalog,
 };
@@ -15,7 +17,7 @@ use dsh_proto::subagent::{SubagentCatalogEntry, SubagentTiming, TokenUsage};
 use dsh_proto::workspace::WorkspaceView;
 use dsh_state::{ProjectionStore, SessionView};
 use dsh_ui::{
-    AgentPresetItemView, ApprovalItem, CommandItemView, FileRefItemView, MessageRow,
+    AgentPresetItemView, ApprovalItem, CommandItemView, FileRefItemView, JobRow, MessageRow,
     ModelGroupView, ModelItemView, PermissionItemView, PlanState, QuestionCard, QuestionItemView,
     QueueItem, Role, SearchHit, SessionStatus, SessionSummary, SubagentMode, SubagentRow,
     SubagentState, TrajectoryRow, WorkspaceTab,
@@ -152,91 +154,315 @@ pub fn approval(event_id: String, agent_id: String, request: &Value) -> Approval
 }
 
 /// 会话视图 → 消息行；末尾追加正在流式输出的行。
+///
+/// `tool/call` 与 `tool/result` 按 `callId` 合成一张卡片：调用在前、输出追加在后，
+/// 避免同一个工具调用出现两张卡、结果卡还丢名字。
 pub fn rows(view: &SessionView) -> Vec<MessageRow> {
-    let mut rows: Vec<MessageRow> = view.entries.iter().filter_map(to_row).collect();
+    let mut rows: Vec<MessageRow> = Vec::new();
+    let mut calls: HashMap<String, usize> = HashMap::new();
+
+    for event in &view.entries {
+        if event.kind == "tool/result" {
+            // 线上形状：`message.toolCallId`；持久化后的记录会提到顶层，两边都认。
+            let call_id = event
+                .data
+                .get("toolCallId")
+                .or_else(|| {
+                    event
+                        .data
+                        .get("message")
+                        .and_then(|message| message.get("toolCallId"))
+                })
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let output = message_text(&event.data);
+            let failed = event
+                .data
+                .get("isError")
+                .and_then(Value::as_bool)
+                .or_else(|| {
+                    event
+                        .data
+                        .get("message")
+                        .and_then(|message| message.get("isError"))
+                        .and_then(Value::as_bool)
+                })
+                .or_else(|| {
+                    event
+                        .data
+                        .get("meta")
+                        .and_then(|meta| meta.get("isError"))
+                        .and_then(Value::as_bool)
+                })
+                .unwrap_or(false);
+            if let Some(index) = calls.get(call_id) {
+                let row = &mut rows[*index];
+                if !output.is_empty() {
+                    if !row.text.is_empty() {
+                        row.text.push('\n');
+                    }
+                    row.text.push_str(&output);
+                }
+                if failed {
+                    row.text.push_str("\n[错误]");
+                }
+                continue;
+            }
+        }
+
+        if let Some(mut row) = to_row(event) {
+            if event.kind == "tool/call"
+                && let Some(call_id) = event.data.get("callId").and_then(Value::as_str)
+            {
+                row.message_id = Some(call_id.to_string());
+                calls.insert(call_id.to_string(), rows.len());
+            }
+            rows.push(row);
+        }
+    }
+
 
     if let Some(live) = &view.live {
-        rows.push(
-            MessageRow::new(
-                format!("live-{}", live.attempt_id),
-                Role::Assistant,
-                live.text.clone(),
-            )
-            .streaming(true),
-        );
+        // 正文未开始（例如模型还在 reasoning）时给个占位，避免出现空白气泡；
+        // 已有思考内容时交给 reasoning 块展示。
+        let text = if live.text.is_empty() {
+            if live.reasoning.is_empty() {
+                "…".to_string()
+            } else {
+                String::new()
+            }
+        } else {
+            live.text.clone()
+        };
+        let mut row =
+            MessageRow::new(format!("live-{}", live.attempt_id), Role::Assistant, text)
+                .streaming(true);
+        if !live.reasoning.is_empty() {
+            row = row.reasoning(live.reasoning.clone());
+        }
+        rows.push(row);
     }
     rows
 }
 
+/// 只把「会话表面」事件渲染成消息：用户输入、助手回复、工具调用/结果。
+///
+/// 上游把 `user/message` / `assistant/message` / `tool/result` 定为 surface 事件
+/// （`packages/session/session-format-v0-to-v1/src/relationships.ts` 的 `SURFACE_TYPES`）。
+/// `system/message`、`request/*`、`agent/inbox/*`、`session/*`、`step/*` 属于运行期
+/// 内部事件，渲染出来就是满屏 JSON / 系统提示，必须过滤。
 fn to_row(event: &SessionWireEvent) -> Option<MessageRow> {
-    let kind = event.kind.as_str();
-    let role = role_of(kind);
-    let text = text_of(event, kind);
+    let (role, text, tool) = match event.kind.as_str() {
+        "user/message" => {
+            // 运行时注入的上下文（runtime-context / system-reminder / 时间采样）不是用户发言
+            let source = event
+                .data
+                .get("source")
+                .and_then(|value| value.get("kind"))
+                .and_then(Value::as_str);
+            if source != Some("user") {
+                return None;
+            }
+            (Role::User, message_text(&event.data), None)
+        }
+        "assistant/message" => (Role::Assistant, message_text(&event.data), None),
+        "tool/call" => {
+            let name = event
+                .data
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("tool")
+                .to_string();
+            // 卡片标题已经有工具名，正文只留参数；edit/write 直接变成 diff
+            let arguments = event
+                .data
+                .get("arguments")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let body = diff_body(&name, arguments).unwrap_or_else(|| arguments.to_string());
+            (Role::Tool, body, Some(name))
+        }
+        "tool/result" => (Role::Tool, message_text(&event.data), None),
+        // 回合以错误结束时不会有 assistant 消息：兜底成一条系统提示，
+        // 否则用户只觉得「没回答」却看不到原因。
+        "turn/end" => {
+            let error = event
+                .data
+                .get("reason")
+                .and_then(|reason| reason.get("error"))?;
+            let code = error
+                .get("code")
+                .and_then(Value::as_str)
+                .unwrap_or("error");
+            let message = error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("未知错误");
+            let first_line = message.lines().next().unwrap_or(message);
+            (
+                Role::System,
+                format!("{code}: {}", truncate(first_line, 300)),
+                None,
+            )
+        }
+        _ => return None,
+    };
 
-    // 纯控制类事件不占消息位
-    if text.is_empty() && !matches!(role, Role::Tool) {
+    let reasoning = if role == Role::Assistant {
+        message_reasoning(&event.data)
+    } else {
+        None
+    };
+    if text.trim().is_empty() && !matches!(role, Role::Tool) && reasoning.is_none() {
         return None;
     }
 
     let mut row = MessageRow::new(format!("e-{}", event.seq), role, text);
     row.message_id = event
         .data
-        .get("message")
-        .and_then(|message| message.get("id"))
+        .get("id")
+        .or_else(|| event.data.get("message").and_then(|message| message.get("id")))
         .or_else(|| event.data.get("messageId"))
-        .or_else(|| event.data.get("id"))
         .and_then(Value::as_str)
         .map(str::to_string);
-    if matches!(role, Role::Tool)
-        && let Some(name) = event.data.get("name").and_then(Value::as_str)
-    {
-        row = row.tool(name.to_string());
+    if let Some(name) = tool {
+        row = row.tool(name);
+    }
+    if let Some(reasoning) = reasoning {
+        row = row.reasoning(reasoning);
     }
     Some(row)
 }
 
-fn role_of(kind: &str) -> Role {
-    match kind {
-        k if k.starts_with("user/") => Role::User,
-        k if k.starts_with("assistant/") => Role::Assistant,
-        "tool/call" | "tool/result" => Role::Tool,
-        _ => Role::System,
+/// `edit` / `write` 的参数 → unified diff 文本，交给工具卡的 diff 视图渲染。
+fn diff_body(name: &str, arguments: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(arguments).ok()?;
+    let path = value.get("file_path").and_then(Value::as_str).unwrap_or("file");
+    let mut body = String::new();
+    match name {
+        "edit" => {
+            let old = value.get("old_string").and_then(Value::as_str)?;
+            let new = value.get("new_string").and_then(Value::as_str)?;
+            body.push_str(&format!("--- a/{path}\n+++ b/{path}\n@@\n"));
+            for line in old.lines() {
+                body.push('-');
+                body.push_str(line);
+                body.push('\n');
+            }
+            for line in new.lines() {
+                body.push('+');
+                body.push_str(line);
+                body.push('\n');
+            }
+        }
+        "write" => {
+            let content = value.get("content").and_then(Value::as_str)?;
+            body.push_str(&format!("--- /dev/null\n+++ b/{path}\n@@\n"));
+            for line in content.lines() {
+                body.push('+');
+                body.push_str(line);
+                body.push('\n');
+            }
+        }
+        _ => return None,
     }
+    Some(body)
 }
 
-/// 从事件里尽量取可读文本；取不到就退化成紧凑 JSON 预览。
-fn text_of(event: &SessionWireEvent, kind: &str) -> String {
-    let data = &event.data;
-
-    // 1) 直接文本字段
-    if let Some(text) = data.get("text").and_then(Value::as_str) {
-        return text.to_string();
+/// 后台任务：`job/registered` 建条目，`job/settled` 补状态与结束时间。
+pub fn jobs(view: &SessionView) -> Vec<JobRow> {
+    let mut rows: Vec<JobRow> = Vec::new();
+    for event in &view.entries {
+        let data = &event.data;
+        let Some(id) = data.get("jobId").and_then(Value::as_str) else {
+            continue;
+        };
+        match event.kind.as_str() {
+            "job/registered" => {
+                if rows.iter().any(|row| row.id == id) {
+                    continue;
+                }
+                rows.push(JobRow {
+                    id: id.to_string(),
+                    kind: text_at(data, "kind"),
+                    label: text_at(data, "label"),
+                    status: "running".to_string(),
+                    started_at: data.get("startedAt").and_then(Value::as_u64).unwrap_or(0),
+                    finished_at: None,
+                    detail: None,
+                });
+            }
+            "job/settled" => {
+                if let Some(row) = rows.iter_mut().find(|row| row.id == id) {
+                    row.status = text_at(data, "status");
+                    row.finished_at = data.get("finishedAt").and_then(Value::as_u64);
+                    row.detail = Some(text_at(data, "detail")).filter(|text| !text.is_empty());
+                }
+            }
+            _ => {}
+        }
     }
+    rows
+}
 
-    // 2) 内嵌 message.content 数组
-    if let Some(content) = data.get("message").and_then(|m| m.get("content")) {
+/// 最近一次 `exit_plan_mode` 的计划正文（右栏计划面板）。
+pub fn plan_markdown(view: &SessionView) -> Option<String> {
+    view.entries.iter().rev().find_map(|event| {
+        if event.kind != "tool/call" {
+            return None;
+        }
+        let name = event.data.get("name").and_then(Value::as_str)?;
+        if !name.contains("plan") {
+            return None;
+        }
+        let arguments = event.data.get("arguments").and_then(Value::as_str)?;
+        let value: Value = serde_json::from_str(arguments).ok()?;
+        value
+            .get("plan")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .filter(|text| !text.trim().is_empty())
+    })
+}
+
+fn text_at(value: &Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// 取一条消息的可显示文本：只保留 `type == "text"` 的内容块，
+/// reasoning / 图片等其它块不进正文。
+fn message_text(data: &Value) -> String {
+    if let Some(content) = data
+        .get("content")
+        .or_else(|| data.get("message").and_then(|message| message.get("content")))
+    {
         let joined = join_text_parts(content);
         if !joined.is_empty() {
             return joined;
         }
     }
+    data.get("text")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
 
-    // 3) 工具调用：把原始 arguments 直接展示（上游也是原始 JSON 字符串）
-    if kind == "tool/call" {
-        let name = data.get("name").and_then(Value::as_str).unwrap_or("tool");
-        let args = data
-            .get("arguments")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        return format!("{name} {args}");
-    }
-
-    // 4) 兜底：紧凑 JSON 预览
-    let compact = data.to_string();
-    if compact == "{}" || compact == "null" {
-        return String::new();
-    }
-    truncate(&compact, 200)
+/// 取消息里的思考块（`{type:"reasoning", text}`）；没有则返回 `None`。
+fn message_reasoning(data: &Value) -> Option<String> {
+    let content = data
+        .get("content")
+        .or_else(|| data.get("message").and_then(|message| message.get("content")))?;
+    let parts = content.as_array()?;
+    let joined = parts
+        .iter()
+        .filter(|part| part.get("type").and_then(Value::as_str) == Some("reasoning"))
+        .filter_map(|part| part.get("text").and_then(Value::as_str))
+        .collect::<String>();
+    (!joined.trim().is_empty()).then_some(joined)
 }
 
 fn join_text_parts(content: &Value) -> String {
@@ -245,6 +471,11 @@ fn join_text_parts(content: &Value) -> String {
     };
     parts
         .iter()
+        .filter(|part| {
+            part.get("type")
+                .and_then(Value::as_str)
+                .is_none_or(|kind| kind == "text")
+        })
         .filter_map(|part| part.get("text").and_then(Value::as_str))
         .collect::<Vec<_>>()
         .join("")
@@ -635,20 +866,57 @@ mod tests {
 
     #[test]
     fn user_message_with_text_field() {
-        let row = to_row(&event("user/message", json!({ "text": "hello" }))).unwrap();
+        let row = to_row(&event(
+            "user/message",
+            json!({ "text": "hello", "source": { "kind": "user" } }),
+        ))
+        .unwrap();
         assert_eq!(row.role, Role::User);
         assert_eq!(row.text, "hello");
+    }
+
+    #[test]
+    fn runtime_context_user_messages_are_hidden() {
+        for source in ["runtime-context", "system-reminder"] {
+            let hidden = to_row(&event(
+                "user/message",
+                json!({ "text": "injected", "source": { "kind": source } }),
+            ));
+            assert!(hidden.is_none(), "{source} 不应出现在对话里");
+        }
     }
 
     #[test]
     fn assistant_message_with_content_parts() {
         let row = to_row(&event(
             "assistant/message",
-            json!({ "message": { "content": [{ "text": "he" }, { "text": "llo" }] } }),
+            json!({
+                "message": {
+                    "content": [
+                        { "type": "reasoning", "text": "先想一想" },
+                        { "type": "text", "text": "he" },
+                        { "type": "text", "text": "llo" }
+                    ]
+                }
+            }),
         ))
         .unwrap();
         assert_eq!(row.role, Role::Assistant);
-        assert_eq!(row.text, "hello");
+        assert_eq!(row.text, "hello", "reasoning 不进正文");
+        assert_eq!(row.reasoning.as_deref(), Some("先想一想"));
+    }
+
+    #[test]
+    fn assistant_message_with_only_reasoning_is_kept() {
+        let row = to_row(&event(
+            "assistant/message",
+            json!({
+                "message": { "content": [{ "type": "reasoning", "text": "只有思考" }] }
+            }),
+        ))
+        .expect("只有 reasoning 的消息也应保留");
+        assert!(row.text.is_empty());
+        assert_eq!(row.reasoning.as_deref(), Some("只有思考"));
     }
 
     #[test]
@@ -664,9 +932,122 @@ mod tests {
     }
 
     #[test]
-    fn control_events_without_text_are_hidden() {
-        assert!(to_row(&event("turn/start", json!({ "turn": 1 }))).is_some());
-        assert!(to_row(&event("request/header", json!({}))).is_none());
+    fn control_events_are_hidden() {
+        for kind in [
+            "turn/start",
+            "step/start",
+            "request/header",
+            "system/message",
+            "agent/inbox/spliced",
+            "session-log-deepseek/delivery-accepted",
+            "session/title-llm-request",
+        ] {
+            assert!(
+                to_row(&event(kind, json!({ "turn": 1 }))).is_none(),
+                "{kind} 是内部事件，不应占消息位"
+            );
+        }
+    }
+
+    #[test]
+    fn turn_error_becomes_system_row() {
+        let row = to_row(&event(
+            "turn/end",
+            json!({ "turn": 1, "reason": { "error": { "code": "UNKNOWN", "message": "boom\nstack" } } }),
+        ))
+        .unwrap();
+        assert_eq!(row.role, Role::System);
+        assert!(row.text.contains("UNKNOWN"));
+        assert!(row.text.contains("boom"));
+        assert!(!row.text.contains('\n'), "只保留首行");
+    }
+
+    #[test]
+    fn completed_turn_has_no_row() {
+        assert!(
+            to_row(&event("turn/end", json!({ "turn": 1, "reason": { "kind": "completed" } })))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn edit_call_becomes_unified_diff() {
+        let row = to_row(&event(
+            "tool/call",
+            json!({
+                "callId": "c1",
+                "name": "edit",
+                "arguments": "{\"file_path\":\"a.rs\",\"old_string\":\"let a = 1;\",\"new_string\":\"let a = 2;\"}"
+            }),
+        ))
+        .unwrap();
+        assert!(row.text.contains("-let a = 1;"));
+        assert!(row.text.contains("+let a = 2;"));
+        assert!(row.text.starts_with("--- a/a.rs"));
+    }
+
+    #[test]
+    fn jobs_track_registered_and_settled() {
+        let mut view = SessionView::new();
+        view.entries = vec![
+            event(
+                "job/registered",
+                json!({ "jobId": "j1", "kind": "bash", "label": "cargo test", "startedAt": 1 }),
+            ),
+            event(
+                "job/settled",
+                json!({ "jobId": "j1", "status": "completed", "finishedAt": 9 }),
+            ),
+        ];
+        let rows = jobs(&view);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, "completed");
+        assert_eq!(rows[0].finished_at, Some(9));
+    }
+
+    #[test]
+    fn tool_call_and_result_share_one_card() {
+        let mut view = SessionView::new();
+        view.entries = vec![
+            event(
+                "tool/call",
+                json!({ "callId": "c1", "name": "bash", "arguments": "{\"command\":\"ls\"}" }),
+            ),
+            event(
+                "tool/result",
+                json!({
+                    "message": {
+                        "toolCallId": "c1",
+                        "content": [{ "type": "text", "text": "/tmp\n" }]
+                    }
+                }),
+            ),
+        ];
+        let rows = rows(&view);
+        assert_eq!(rows.len(), 1, "调用与结果合成一张卡");
+        assert_eq!(rows[0].role, Role::Tool);
+        assert_eq!(rows[0].tool_name.as_deref(), Some("bash"));
+        assert!(rows[0].text.contains("ls"));
+        assert!(rows[0].text.contains("/tmp"));
+    }
+
+    #[test]
+    fn tool_failure_marks_card() {
+        let mut view = SessionView::new();
+        view.entries = vec![
+            event(
+                "tool/call",
+                json!({ "callId": "c1", "name": "bash", "arguments": "{}" }),
+            ),
+            event(
+                "tool/result",
+                json!({ "toolCallId": "c1", "isError": true, "message": { "content": [{ "type": "text", "text": "boom" }] } }),
+            ),
+        ];
+        let rows = rows(&view);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].text.contains("boom"));
+        assert!(rows[0].text.contains("[错误]"));
     }
 
     #[test]

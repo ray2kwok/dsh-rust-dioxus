@@ -15,6 +15,7 @@
 
 pub mod composer;
 pub mod conversation;
+pub mod editor;
 pub mod file_tree;
 pub mod i18n;
 pub mod icons;
@@ -25,24 +26,27 @@ pub mod model;
 pub mod settings;
 pub mod sidebar;
 pub mod subagent;
+pub mod terminal;
 pub mod tool_card;
 
 pub use composer::{CommandItemView, Composer, FileRefItemView};
+pub use editor::EditorPane;
 pub use file_tree::FileTree;
 pub use i18n::{Key, Locale, T};
 pub use icons::Icon;
 pub use layout::AppShell;
 pub use markdown::MarkdownView;
-pub use math::MathView;
+pub use math::{MathChunk, MathText, MathView, split_math};
 pub use model::{
-    ApprovalItem, AsideChat, ComposerAttachment, ConnectionState, FileEntry, MessageRow, PlanState,
-    QuestionCard, QuestionItemView, QueueItem, Role, SearchHit, SendMode, SendRequest,
-    SessionStatus, SessionSummary, SubagentMode, SubagentRow, SubagentState, Theme, TrajectoryRow,
-    WorkspaceTab,
+    ApprovalItem, AsideChat, ComposerAttachment, ConnectionState, FileEntry, JobRow, MessageRow,
+    PlanState, PreviewDoc, QuestionCard, QuestionItemView, QueueItem, Role, SearchHit, SendMode,
+    SendRequest, SessionStatus, SessionSummary, SubagentMode, SubagentRow, SubagentState,
+    TerminalView, Theme, TrajectoryRow, WorkspaceTab,
 };
 pub use settings::{
-    AgentPresetItemView, ModelGroupView, ModelItemView, PermissionItemView, SettingsChange,
-    SettingsPanel, SettingsSnapshot,
+    AgentPresetItemView, ModelGroupView, ModelItemView, PermissionItemView, ProviderRow,
+    SettingsChange, SettingsPanel, SettingsSnapshot,
 };
 pub use subagent::{SubagentAside, SubagentCatalog};
+pub use terminal::TerminalPanel;
 pub use tool_card::ToolCard;

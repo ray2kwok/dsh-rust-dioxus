@@ -10,12 +10,13 @@
 //! - 其余会话方法统一是 `{ "request": … }`；
 //! - `$events` 的 `ready` 帧是连接代次来源，`clientId` 用于 waterfall 应答。
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use dsh_proto::endpoint::{
-    API_PREFIX, feedback as feedback_ep, files as files_ep, interaction as interaction_ep,
-    session as session_ep, settings as settings_ep, subagent as subagent_ep,
-    workspace as workspace_ep,
+    API_PREFIX, credentials as credentials_ep, feedback as feedback_ep, files as files_ep,
+    interaction as interaction_ep, llm as llm_ep, session as session_ep, settings as settings_ep,
+    subagent as subagent_ep, terminal as terminal_ep, workspace as workspace_ep,
 };
 use dsh_proto::events::{
     ApprovalOutcome, EventOutcome, REMOTE_EVENT_RESULT_ENDPOINT, REMOTE_EVENT_STREAM_ENDPOINT,
@@ -25,6 +26,7 @@ use dsh_proto::interaction::{
     AgentPresetRoster, CommandDescriptor, CommandExecution, FileReferenceCandidate, ModelCatalog,
     PermissionCatalog, SelectModelValue, UploadValue,
 };
+use dsh_proto::llm::{CredentialInfo, LlmConfigurableProvider, LlmProviderInfo};
 use dsh_proto::session::{
     PromptContent, PromptMode, QueueAction, SessionAddress, SessionCreateRequest,
     SessionCreateValue, SessionFollowFrame, SessionFollowRequest, SessionForkRequest,
@@ -35,6 +37,9 @@ use dsh_proto::session::{
 use dsh_proto::settings::SettingsDescribeValue;
 use dsh_proto::subagent::{
     SubagentInterruptRequest, SubagentInterruptValue, SubagentPromptRequest, SubagentPromptValue,
+};
+use dsh_proto::terminal::{
+    TerminalCreateRequest, TerminalEnvironment, TerminalShell, WebTerminalInfo,
 };
 use dsh_proto::workspace::{
     WorkspaceCreateValue, WorkspaceOrderValue, WorkspacePinValue, WorkspaceValue,
@@ -476,7 +481,7 @@ impl DshClient {
             return Ok(Vec::new());
         };
 
-        Ok(array
+        let mut items: Vec<FileItem> = array
             .iter()
             .filter_map(|entry| {
                 let path = entry
@@ -511,7 +516,15 @@ impl DshClient {
                     is_dir,
                 })
             })
-            .collect())
+            .collect();
+
+        // 目录条目只给 name：补成「父目录/名字」，否则后续 read 找不到文件。
+        for item in &mut items {
+            if !item.path.contains('/') {
+                item.path = format!("{}/{}", path.trim_end_matches('/'), item.name);
+            }
+        }
+        Ok(items)
     }
 
     /// 读取文本文件（预览用）。
@@ -520,7 +533,8 @@ impl DshClient {
             .rpc
             .call_value(
                 files_ep::READ,
-                json!({ "workspaceFileScopeId": scope_id, "path": path }),
+                // `range` 是必填形参（缺省会被网关判为 arguments-invalid）
+                json!({ "workspaceFileScopeId": scope_id, "path": path, "range": {} }),
             )
             .await?;
 
@@ -825,6 +839,67 @@ impl DshClient {
         value.ok_or_else(|| TransportError::Protocol("session/modelCatalog 未返回结果".into()))
     }
 
+    /// 当前已注册（可路由）的 provider。
+    pub async fn list_providers(&self) -> Result<Vec<LlmProviderInfo>, TransportError> {
+        let value = self
+            .rpc
+            .call::<Vec<LlmProviderInfo>>(llm_ep::LIST_PROVIDERS, json!({}))
+            .await?;
+        Ok(value.unwrap_or_default())
+    }
+
+    /// 设置页可配置的 provider 目录（官方实现 + pi-ai route）。
+    pub async fn list_configurable_providers(
+        &self,
+    ) -> Result<Vec<LlmConfigurableProvider>, TransportError> {
+        let value = self
+            .rpc
+            .call::<Vec<LlmConfigurableProvider>>(llm_ep::LIST_CONFIGURABLE_PROVIDERS, json!({}))
+            .await?;
+        Ok(value.unwrap_or_default())
+    }
+
+    /// 查询若干凭据引用是否已配置。
+    pub async fn credentials_describe(
+        &self,
+        refs: Vec<String>,
+    ) -> Result<HashMap<String, CredentialInfo>, TransportError> {
+        let value = self
+            .rpc
+            .call::<HashMap<String, CredentialInfo>>(
+                credentials_ep::DESCRIBE,
+                json!({ "refs": refs }),
+            )
+            .await?;
+        Ok(value.unwrap_or_default())
+    }
+
+    /// 写入一条凭据（API Key）。
+    pub async fn credentials_set(
+        &self,
+        reference: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Result<(), TransportError> {
+        self.rpc
+            .call_value(
+                credentials_ep::SET,
+                json!({ "ref": reference.into(), "value": value.into() }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// 删除一条凭据。
+    pub async fn credentials_unset(
+        &self,
+        reference: impl Into<String>,
+    ) -> Result<(), TransportError> {
+        self.rpc
+            .call_value(credentials_ep::UNSET, json!({ "ref": reference.into() }))
+            .await?;
+        Ok(())
+    }
+
     /// 为会话选择模型。
     pub async fn select_model(
         &self,
@@ -966,5 +1041,117 @@ impl DshClient {
             .append_pair("name", &name);
         let value = self.rpc.post_raw_url(url, bytes, &media_type).await?;
         serde_json::from_value(value).map_err(TransportError::Json)
+    }
+}
+
+impl DshClient {
+    /// Session 当前目录与终端限制（`terminal/environment`）。
+    pub async fn terminal_environment(
+        &self,
+        session_id: impl Into<String>,
+    ) -> Result<TerminalEnvironment, TransportError> {
+        let value = self
+            .rpc
+            .call::<TerminalEnvironment>(
+                terminal_ep::ENVIRONMENT,
+                json!({ "agentId": session_id.into() }),
+            )
+            .await?;
+        value.ok_or_else(|| TransportError::Protocol("terminal/environment 未返回结果".into()))
+    }
+
+    /// 可用的 shell 列表（`terminal/shells`）。
+    pub async fn terminal_shells(
+        &self,
+        session_id: impl Into<String>,
+    ) -> Result<Vec<TerminalShell>, TransportError> {
+        let value = self
+            .rpc
+            .call::<Vec<TerminalShell>>(
+                terminal_ep::SHELLS,
+                json!({ "agentId": session_id.into() }),
+            )
+            .await?;
+        Ok(value.unwrap_or_default())
+    }
+
+    /// 列出该 Session 已保留的终端（`terminal/list`，只读）。
+    pub async fn terminal_list(
+        &self,
+        session_id: impl Into<String>,
+    ) -> Result<Vec<WebTerminalInfo>, TransportError> {
+        let value = self
+            .rpc
+            .call::<Vec<WebTerminalInfo>>(
+                terminal_ep::LIST,
+                json!({ "sessionId": session_id.into() }),
+            )
+            .await?;
+        Ok(value.unwrap_or_default())
+    }
+
+    /// 创建（或复用）终端。`id` 由客户端生成，重复调用幂等。
+    pub async fn terminal_create(
+        &self,
+        session_id: impl Into<String>,
+        request: TerminalCreateRequest,
+    ) -> Result<WebTerminalInfo, TransportError> {
+        let value = self
+            .rpc
+            .call::<WebTerminalInfo>(
+                terminal_ep::CREATE,
+                json!({ "agentId": session_id.into(), "request": request }),
+            )
+            .await?;
+        value.ok_or_else(|| TransportError::Protocol("terminal/create 未返回结果".into()))
+    }
+
+    /// 打开双向 attachment 流：首帧是屏幕快照，之后是增量输出。
+    ///
+    /// 返回的 [`StreamHandle`] 用 [`StreamHandle::uplink`] 发送 `TerminalInput`。
+    pub fn terminal_attach(
+        &self,
+        session_id: impl Into<String>,
+        id: impl Into<String>,
+    ) -> Result<StreamHandle, TransportError> {
+        self.mux.open_args(
+            terminal_ep::ATTACH,
+            json!({ "agentId": session_id.into(), "id": id.into() }),
+        )
+    }
+
+    /// 重命名终端。
+    pub async fn terminal_rename(
+        &self,
+        session_id: impl Into<String>,
+        id: impl Into<String>,
+        title: impl Into<String>,
+    ) -> Result<(), TransportError> {
+        self.rpc
+            .call_value(
+                terminal_ep::RENAME,
+                json!({
+                    "agentId": session_id.into(),
+                    "id": id.into(),
+                    "title": title.into(),
+                }),
+            )
+            .await
+            .map(|_| ())
+    }
+
+    /// 关闭终端并结束其进程组；重复关闭同样成功。
+    pub async fn terminal_close(
+        &self,
+        session_id: impl Into<String>,
+        id: impl Into<String>,
+    ) -> Result<(), TransportError> {
+        self.rpc
+            .call_value(
+                terminal_ep::CLOSE,
+                json!({ "agentId": session_id.into(), "id": id.into() }),
+            )
+            .await
+            .map(|_| ())
     }
 }

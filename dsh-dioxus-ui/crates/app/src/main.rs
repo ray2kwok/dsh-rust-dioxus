@@ -11,6 +11,7 @@ mod map;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -20,16 +21,18 @@ use dsh_proto::interaction::{
     AgentPresetRoster, CommandDescriptor, FileReferenceCandidate, MessageFeedbackPutRequest,
     ModelCatalog, ModelSelection, PermissionCatalog,
 };
+use dsh_proto::llm::{CredentialInfo, LlmConfigurableProvider, LlmProviderInfo};
 use dsh_proto::session::{PromptContent, SessionAddress, SessionControlFrame, SessionFollowFrame};
 use dsh_proto::settings::{LOCALE_NS, SUBAGENT_NS, SettingsDescribeValue, THEME_NS};
+use dsh_proto::terminal::{TerminalCreateRequest, TerminalFrame, TerminalInput, WebTerminalInfo};
 use dsh_proto::workspace::{WorkspaceFollowFrame, WorkspaceView};
 use dsh_runtime::DshClient;
 use dsh_state::{ProjectionStore, SessionView};
-use dsh_transport::{Backoff, StreamEvent};
+use dsh_transport::{Backoff, StreamEvent, StreamHandle, StreamUplink};
 use dsh_ui::{
-    AppShell, ApprovalItem, AsideChat, ConnectionState, FileEntry, MessageRow, QuestionCard,
-    QueueItem, SearchHit, SendMode, SendRequest, SessionSummary, SettingsChange, SubagentRow,
-    Theme, TrajectoryRow,
+    AppShell, ApprovalItem, AsideChat, ConnectionState, FileEntry, MessageRow, PreviewDoc,
+    ProviderRow, QuestionCard, QueueItem, SearchHit, SendMode, SendRequest, SessionSummary,
+    SettingsChange, SubagentRow, TerminalView, Theme, TrajectoryRow,
 };
 use tokio::sync::mpsc;
 
@@ -98,7 +101,9 @@ struct Ui {
     file_expanded: Signal<Vec<String>>,
     file_loading: Signal<bool>,
     file_root: Signal<String>,
-    preview: Signal<Option<String>>,
+    preview: Signal<Option<PreviewDoc>>,
+    /// 中间编辑区 tab：0 = 对话，1 = 预览，2 = 子会话。
+    editor_tab: Signal<u8>,
     active: Signal<Option<String>>,
     /// 当前会话的完整地址（普通会话或子会话）。
     active_address: Signal<Option<SessionAddress>>,
@@ -137,6 +142,8 @@ struct Ui {
     searching: Signal<bool>,
     settings: Signal<Option<SettingsDescribeValue>>,
     settings_saving: Signal<bool>,
+    /// 设置页「模型提供方」列表（含凭据配置状态）。
+    providers: Signal<Vec<ProviderRow>>,
     models: Signal<Option<ModelCatalog>>,
     permissions: Signal<Option<PermissionCatalog>>,
     agent_presets: Signal<Option<AgentPresetRoster>>,
@@ -145,6 +152,15 @@ struct Ui {
     default_preset: Signal<Option<String>>,
     commands: Signal<Vec<CommandDescriptor>>,
     file_refs: Signal<Vec<FileReferenceCandidate>>,
+    /// 右栏用户终端（`terminal/attach`）。
+    terminal: Signal<Option<TerminalView>>,
+    terminal_loading: Signal<bool>,
+    /// attachment 的上行发送端；读任务持有 `StreamHandle`，这里只保留半部。
+    terminal_uplink: Signal<Option<StreamUplink>>,
+    /// 当前 attachment 的存活标记：切换会话时让旧读任务静默退出。
+    terminal_alive: Signal<Option<Arc<AtomicBool>>>,
+    /// 每条 attachment 从 1 连续递增的输入序号。
+    terminal_seq: Signal<u64>,
     error: Signal<Option<String>>,
     /// 手动重连触发器（监督循环里 select）。
     force_reconnect: Signal<Option<mpsc::UnboundedSender<()>>>,
@@ -174,7 +190,8 @@ fn App() -> Element {
         file_expanded: use_signal(Vec::<String>::new),
         file_loading: use_signal(|| false),
         file_root: use_signal(String::new),
-        preview: use_signal(|| None::<String>),
+        preview: use_signal(|| None::<PreviewDoc>),
+        editor_tab: use_signal(|| 0u8),
         active: use_signal(|| None::<String>),
         active_address: use_signal(|| None::<SessionAddress>),
         lineage: use_signal(Vec::<(SessionAddress, String)>::new),
@@ -206,6 +223,7 @@ fn App() -> Element {
         searching: use_signal(|| false),
         settings: use_signal(|| None::<SettingsDescribeValue>),
         settings_saving: use_signal(|| false),
+        providers: use_signal(Vec::<ProviderRow>::new),
         models: use_signal(|| None::<ModelCatalog>),
         permissions: use_signal(|| None::<PermissionCatalog>),
         agent_presets: use_signal(|| None::<AgentPresetRoster>),
@@ -214,6 +232,11 @@ fn App() -> Element {
         default_preset: use_signal(|| None::<String>),
         commands: use_signal(Vec::<CommandDescriptor>::new),
         file_refs: use_signal(Vec::<FileReferenceCandidate>::new),
+        terminal: use_signal(|| None::<TerminalView>),
+        terminal_loading: use_signal(|| false),
+        terminal_uplink: use_signal(|| None::<StreamUplink>),
+        terminal_alive: use_signal(|| None::<Arc<AtomicBool>>),
+        terminal_seq: use_signal(|| 0u64),
         error: use_signal(|| None::<String>),
         force_reconnect: use_signal(|| Some(force_tx)),
     };
@@ -257,6 +280,7 @@ fn App() -> Element {
 
                         ui.approvals.set(Vec::new());
                         ui.questions.set(Vec::new());
+                        ui.providers.set(Vec::new());
                         ui.client_id.set(None);
                         ui.client.set(None);
                         ui.active_address.set(None);
@@ -286,6 +310,7 @@ fn App() -> Element {
     });
 
     let on_new_session = move |workspace_id: Option<String>| {
+        detach_terminal(ui);
         let Some(handle) = ui.client.read().clone() else {
             return;
         };
@@ -311,6 +336,8 @@ fn App() -> Element {
                     ui.active_address
                         .set(Some(SessionAddress::session(id.clone())));
                     ui.lineage.set(Vec::new());
+                    ui.preview.set(None);
+                    ui.editor_tab.set(0);
                     ui.messages.set(Vec::new());
                     ui.trajectory.set(Vec::new());
                     ui.queue.set(Vec::new());
@@ -329,6 +356,9 @@ fn App() -> Element {
     };
 
     let on_select = move |id: String| {
+        detach_terminal(ui);
+        ui.preview.set(None);
+        ui.editor_tab.set(0);
         ui.active.set(Some(id.clone()));
         ui.active_address
             .set(Some(SessionAddress::session(id.clone())));
@@ -754,6 +784,9 @@ fn App() -> Element {
     };
 
     let on_subagent_open = move |row: SubagentRow| {
+        detach_terminal(ui);
+        ui.preview.set(None);
+        ui.editor_tab.set(0);
         let Some(parent_address) = (ui.active_address)() else {
             return;
         };
@@ -791,6 +824,8 @@ fn App() -> Element {
             row.id.clone(),
             map::wire_mode(row.mode),
         );
+        ui.preview.set(None);
+        ui.editor_tab.set(2);
         ui.aside.set(Some(AsideChat {
             id: row.id.clone(),
             title: row.label.clone(),
@@ -803,6 +838,9 @@ fn App() -> Element {
     };
 
     let on_navigate = move |id: String| {
+        detach_terminal(ui);
+        ui.preview.set(None);
+        ui.editor_tab.set(0);
         let lineage = (ui.lineage)();
         let Some(pos) = lineage
             .iter()
@@ -828,7 +866,12 @@ fn App() -> Element {
         }
     };
 
-    let on_close_aside = move |_| ui.aside.set(None);
+    let on_close_aside = move |_| {
+        ui.aside.set(None);
+        if (ui.editor_tab)() == 2 {
+            ui.editor_tab.set(0);
+        }
+    };
 
     let on_copy = move |text: String| {
         let escaped = serde_json::to_string(&text).unwrap_or_else(|_| "\"\"".to_string());
@@ -980,6 +1023,7 @@ if (navigator.clipboard && navigator.clipboard.writeText) {{
     };
 
     let on_fork = move |session_id: String| {
+        detach_terminal(ui);
         let Some(handle) = ui.client.read().clone() else {
             return;
         };
@@ -998,6 +1042,8 @@ if (navigator.clipboard && navigator.clipboard.writeText) {{
                     active.set(Some(child.clone()));
                     address.set(Some(SessionAddress::session(child.clone())));
                     lineage.set(Vec::new());
+                    ui.preview.set(None);
+                    ui.editor_tab.set(0);
                     spawn_follow(Arc::clone(&handle), SessionAddress::session(child), ui);
                 }
                 Err(err) => error.set(Some(format!("Fork 失败: {err}"))),
@@ -1231,6 +1277,113 @@ if (navigator.clipboard && navigator.clipboard.writeText) {{
         });
     };
 
+    let on_provider_save = move |(id, key): (String, String)| {
+        let Some(handle) = ui.client.read().clone() else {
+            return;
+        };
+        let Some(row) = (ui.providers)().into_iter().find(|item| item.id == id) else {
+            return;
+        };
+        let Some(reference) = row.key_ref.clone() else {
+            return;
+        };
+        let mut error = ui.error;
+        let mut providers_signal = ui.providers;
+        let mut settings_signal = ui.settings;
+        let mut models_signal = ui.models;
+        spawn(async move {
+            // pi-ai route 需要先落一条 `providers.<id>`；官方实现的 `apiKeyEnv` 已有默认值。
+            if !row.settings_path.is_empty() {
+                let Ok(describe) = handle.describe_settings().await else {
+                    error.set(Some("读取设置失败".to_string()));
+                    return;
+                };
+                let Some(ns) = describe.namespace(&row.settings_ns) else {
+                    error.set(Some(format!("Host 未提供设置命名空间 {}", row.settings_ns)));
+                    return;
+                };
+                let revision = ns.revision;
+                let mut routes = ns
+                    .field("providers")
+                    .and_then(|value| value.as_object())
+                    .cloned()
+                    .unwrap_or_default();
+                routes.insert(
+                    row.id.clone(),
+                    serde_json::json!({ "apiKeyEnv": reference }),
+                );
+                let patch = serde_json::json!({ "providers": routes });
+                if let Err(err) = handle
+                    .update_settings(row.settings_ns.clone(), patch, Some(revision))
+                    .await
+                {
+                    error.set(Some(format!("写入 provider 配置失败: {err}")));
+                    return;
+                }
+            }
+            if let Err(err) = handle.credentials_set(reference, key).await {
+                error.set(Some(format!("保存 API Key 失败: {err}")));
+                return;
+            }
+            if let Ok(describe) = handle.describe_settings().await {
+                providers_signal.set(load_providers(&handle, &describe).await);
+                settings_signal.set(Some(describe));
+            }
+            match handle.model_catalog().await {
+                Ok(catalog) => models_signal.set(Some(catalog)),
+                Err(err) => error.set(Some(format!("刷新模型目录失败: {err}"))),
+            }
+        });
+    };
+
+    let on_provider_remove = move |id: String| {
+        let Some(handle) = ui.client.read().clone() else {
+            return;
+        };
+        let Some(row) = (ui.providers)().into_iter().find(|item| item.id == id) else {
+            return;
+        };
+        let mut error = ui.error;
+        let mut providers_signal = ui.providers;
+        let mut settings_signal = ui.settings;
+        let mut models_signal = ui.models;
+        spawn(async move {
+            if !row.settings_path.is_empty()
+                && let Ok(describe) = handle.describe_settings().await
+                && let Some(ns) = describe.namespace(&row.settings_ns)
+            {
+                let revision = ns.revision;
+                let mut routes = ns
+                    .field("providers")
+                    .and_then(|value| value.as_object())
+                    .cloned()
+                    .unwrap_or_default();
+                routes.remove(&row.id);
+                let patch = serde_json::json!({ "providers": routes });
+                if let Err(err) = handle
+                    .update_settings(row.settings_ns.clone(), patch, Some(revision))
+                    .await
+                {
+                    error.set(Some(format!("移除 provider 配置失败: {err}")));
+                    return;
+                }
+            }
+            if let Some(reference) = row.key_ref.clone()
+                && let Err(err) = handle.credentials_unset(reference).await
+            {
+                error.set(Some(format!("删除 API Key 失败: {err}")));
+                return;
+            }
+            if let Ok(describe) = handle.describe_settings().await {
+                providers_signal.set(load_providers(&handle, &describe).await);
+                settings_signal.set(Some(describe));
+            }
+            if let Ok(catalog) = handle.model_catalog().await {
+                models_signal.set(Some(catalog));
+            }
+        });
+    };
+
     let on_select_permission = move |value: String| {
         let Some(handle) = ui.client.read().clone() else {
             return;
@@ -1287,6 +1440,9 @@ if (navigator.clipboard && navigator.clipboard.writeText) {{
     let on_command_query = move |_| {};
 
     let on_open_file = move |path: String| {
+        // 中间编辑区同一时刻只展示一种内容：打开文件时让位于预览
+        ui.aside.set(None);
+        ui.editor_tab.set(1);
         let Some(handle) = ui.client.read().clone() else {
             return;
         };
@@ -1296,8 +1452,16 @@ if (navigator.clipboard && navigator.clipboard.writeText) {{
         let scope = address.session_id().as_str().to_string();
         spawn(async move {
             match handle.read_file(&scope, &path).await {
-                Ok(text) => ui.preview.set(Some(text)),
-                Err(err) => ui.preview.set(Some(format!("读取失败: {err}"))),
+                Ok(text) => ui.preview.set(Some(PreviewDoc {
+                    path: path.clone(),
+                    text,
+                    error: false,
+                })),
+                Err(err) => ui.preview.set(Some(PreviewDoc {
+                    path: path.clone(),
+                    text: format!("读取失败: {err}"),
+                    error: true,
+                })),
             }
         });
     };
@@ -1386,6 +1550,66 @@ if (navigator.clipboard && navigator.clipboard.writeText) {{
         });
     };
 
+    let on_terminal_open = move |_| {
+        let Some(handle) = ui.client.read().clone() else {
+            return;
+        };
+        let Some(session_id) = (ui.active)() else {
+            return;
+        };
+        if (ui.terminal_loading)() {
+            return;
+        }
+        spawn_terminal(handle, session_id, ui);
+    };
+
+    let on_terminal_close = move |_| {
+        let Some(view) = (ui.terminal)() else {
+            return;
+        };
+        let session_id = (ui.active)();
+        if let Some(alive) = (ui.terminal_alive)() {
+            alive.store(false, Ordering::Relaxed);
+        }
+        if let Some(uplink) = (ui.terminal_uplink)() {
+            uplink.cancel();
+        }
+        ui.terminal_alive.set(None);
+        ui.terminal_uplink.set(None);
+        ui.terminal.set(None);
+        ui.terminal_seq.set(0);
+        let Some(handle) = ui.client.read().clone() else {
+            return;
+        };
+        let Some(session_id) = session_id else {
+            return;
+        };
+        spawn(async move {
+            if let Err(err) = handle.terminal_close(&session_id, &view.id).await {
+                tracing::warn!(%err, "关闭终端失败");
+            }
+        });
+    };
+
+    let on_terminal_input = move |text: String| {
+        let Some(uplink) = (ui.terminal_uplink)() else {
+            tracing::warn!("终端输入被忽略：uplink 不存在");
+            ui.error
+                .set(Some("终端连接已断开，请关闭后重新打开终端".to_string()));
+            return;
+        };
+        let sequence = (ui.terminal_seq)() + 1;
+        ui.terminal_seq.set(sequence);
+        let bytes = text.len();
+        match serde_json::to_value(TerminalInput::write(sequence, text)) {
+            Ok(value) => {
+                uplink.send_item(value);
+                tracing::info!(sequence, bytes, "终端输入已发送");
+            }
+            Err(err) => tracing::warn!(%err, "序列化终端输入失败"),
+        }
+    };
+
     let active_address = (ui.active_address)();
     let is_subagent = active_address
         .as_ref()
@@ -1460,6 +1684,9 @@ if (navigator.clipboard && navigator.clipboard.writeText) {{
     let plan_state = (ui.active)()
         .map(|id| map::plan_state(&projection_store, &id))
         .unwrap_or_default();
+    let session_view = (ui.view)();
+    let jobs = session_view.as_ref().map(map::jobs).unwrap_or_default();
+    let plan_markdown = session_view.as_ref().and_then(map::plan_markdown);
     let subagent_migration = (ui.active)()
         .map(|id| projection_store.migration_required(&id))
         .unwrap_or(false);
@@ -1505,6 +1732,19 @@ if (navigator.clipboard && navigator.clipboard.writeText) {{
             on_file_toggle,
             on_file_refresh,
             preview: (ui.preview)(),
+            jobs,
+            plan_markdown,
+            on_close_preview: move |_| {
+                ui.preview.set(None);
+                ui.editor_tab.set(0);
+            },
+            editor_tab: (ui.editor_tab)(),
+            on_editor_tab: move |tab| ui.editor_tab.set(tab),
+            terminal: (ui.terminal)(),
+            terminal_loading: (ui.terminal_loading)(),
+            on_terminal_open,
+            on_terminal_close,
+            on_terminal_input,
             connection: (ui.connection)(),
             approvals: (ui.approvals)(),
             questions: (ui.questions)(),
@@ -1518,6 +1758,7 @@ if (navigator.clipboard && navigator.clipboard.writeText) {{
             host_label: (ui.host_label)(),
             settings: settings_view,
             model_groups,
+            providers: (ui.providers)(),
             permissions: permissions_view,
             agent_presets: agent_presets_view,
             selected_model: selected_model_pair,
@@ -1525,6 +1766,8 @@ if (navigator.clipboard && navigator.clipboard.writeText) {{
             settings_saving: (ui.settings_saving)(),
             on_settings_change,
             on_select_model,
+            on_provider_save,
+            on_provider_remove,
             on_select_permission,
             on_apply_preset,
             commands: commands_view,
@@ -1605,6 +1848,15 @@ async fn bootstrap(mut ui: Ui) -> Result<mpsc::Receiver<()>, dsh_transport::Tran
     ui.subagent_loading.set(false);
     ui.lineage.set(Vec::new());
     ui.aside.set(None);
+    // 重连后旧 mux 上的 attachment 已失效：丢弃本地视图与上行端
+    if let Some(alive) = (ui.terminal_alive)() {
+        alive.store(false, Ordering::Relaxed);
+    }
+    ui.terminal_alive.set(None);
+    ui.terminal_uplink.set(None);
+    ui.terminal.set(None);
+    ui.terminal_loading.set(false);
+    ui.terminal_seq.set(0);
 
     if let Ok(mut events) = handle.open_events() {
         if let Some(client_id) = handle.await_ready(&mut events).await {
@@ -1734,6 +1986,7 @@ async fn bootstrap(mut ui: Ui) -> Result<mpsc::Receiver<()>, dsh_transport::Tran
         let snapshot = map::settings_snapshot(&describe, (ui.theme)(), (ui.locale)());
         ui.theme.set(snapshot.theme);
         ui.locale.set(snapshot.locale);
+        ui.providers.set(load_providers(&handle, &describe).await);
         ui.settings.set(Some(describe));
     }
     if let Ok(catalog) = handle.model_catalog().await {
@@ -1777,6 +2030,11 @@ async fn bootstrap(mut ui: Ui) -> Result<mpsc::Receiver<()>, dsh_transport::Tran
             SessionAddress::session(session_id.clone()),
             ui,
         );
+
+        // 调试钩子：启动即展开底部终端（视觉验证用）
+        if std::env::var("DSH_DEBUG_TERMINAL").ok().as_deref() == Some("1") {
+            spawn_terminal(Arc::clone(&handle), session_id.clone(), ui);
+        }
 
         // 右栏文件树：path 不能为空（网关返回 "path is required"），用会话 cwd 作根
         let root = first.cwd.clone().unwrap_or_else(|| ".".to_string());
@@ -1903,6 +2161,272 @@ async fn bootstrap(mut ui: Ui) -> Result<mpsc::Receiver<()>, dsh_transport::Tran
 }
 
 /// 打开会话事件流并归约。
+/// 流式更新后让对话贴底。
+///
+/// `force` 用于首帧/切会话；普通增量只在用户已接近底部时跟随，
+/// 这样向上翻历史时不会被新内容拽回去。
+fn scroll_conversation(force: bool) {
+    let force = if force { "true" } else { "false" };
+    // 等 Dioxus 把新消息写进 DOM 后再量 scrollHeight，否则滚到的是旧底部。
+    // `__dshStick` 由用户滚动事件维护：向上翻历史时新内容不会把视口拽回底部；
+    // 内容一次性长高超过阈值也能继续跟随。
+    let _ = document::eval(&format!(
+        "requestAnimationFrame(() => requestAnimationFrame(() => {{\
+           const el = document.querySelector('.editor__conversation .messages');\
+           if (!el) return;\
+           if (!el.__dshFollow) {{\
+             el.__dshFollow = true;\
+             el.__dshStick = true;\
+             el.addEventListener('scroll', () => {{\
+               el.__dshStick = (el.scrollHeight - el.scrollTop - el.clientHeight) < 160;\
+             }});\
+           }}\
+           if ({force} || el.__dshStick) el.scrollTop = el.scrollHeight;\
+         }}));"
+    ));
+}
+
+/// 屏幕缓冲上限：超出后按行丢弃最旧内容，避免长时间运行后无限增长。
+const MAX_SCREEN_BYTES: usize = 512 * 1024;
+
+/// 切换会话 / 重连时丢弃当前 attachment。
+///
+/// 只断流、不杀进程：Host 侧终端按 Session 保留，切回来时 `terminal/list`
+/// 会命中同一个 running 终端并重新 attach。
+fn detach_terminal(mut ui: Ui) {
+    if let Some(alive) = (ui.terminal_alive)() {
+        alive.store(false, Ordering::Relaxed);
+    }
+    if let Some(uplink) = (ui.terminal_uplink)() {
+        uplink.cancel();
+    }
+    ui.terminal_alive.set(None);
+    ui.terminal_uplink.set(None);
+    ui.terminal.set(None);
+    ui.terminal_loading.set(false);
+    ui.terminal_seq.set(0);
+}
+
+/// 打开（或复用）终端，并持续消费 `terminal/attach` 的下行帧。
+fn spawn_terminal(handle: Arc<DshClient>, session_id: String, mut ui: Ui) {
+    // 旧 attachment 先失效，避免两个读任务同时写 UI
+    if let Some(old) = (ui.terminal_alive)() {
+        old.store(false, Ordering::Relaxed);
+    }
+    if let Some(uplink) = (ui.terminal_uplink)() {
+        uplink.cancel();
+    }
+    ui.terminal_uplink.set(None);
+
+    let alive = Arc::new(AtomicBool::new(true));
+    let task_alive = Arc::clone(&alive);
+    ui.terminal_alive.set(Some(alive));
+
+    let mut loading = ui.terminal_loading;
+    let mut error = ui.error;
+    loading.set(true);
+
+    spawn(async move {
+        let opened: Result<(WebTerminalInfo, StreamHandle), String> = async {
+            let env = handle
+                .terminal_environment(&session_id)
+                .await
+                .map_err(|err| format!("读取终端环境失败: {err}"))?;
+            let cols = if env.max_cols == 0 {
+                100
+            } else {
+                env.max_cols.clamp(20, 120)
+            };
+            let rows = if env.max_rows == 0 {
+                30
+            } else {
+                env.max_rows.clamp(8, 60)
+            };
+
+            // 已有 running 终端（例如切走再切回来）直接复用
+            let existing = handle.terminal_list(&session_id).await.unwrap_or_default();
+            let info = match existing.into_iter().find(WebTerminalInfo::is_running) {
+                Some(info) => info,
+                None => {
+                    let request = TerminalCreateRequest {
+                        shell_path: None,
+                        id: next_terminal_id(),
+                        cols,
+                        rows,
+                    };
+                    handle
+                        .terminal_create(&session_id, request)
+                        .await
+                        .map_err(|err| format!("创建终端失败: {err}"))?
+                }
+            };
+            let stream = handle
+                .terminal_attach(&session_id, info.id.clone())
+                .map_err(|err| format!("attach 终端失败: {err}"))?;
+            Ok((info, stream))
+        }
+        .await;
+
+        let (info, mut stream) = match opened {
+            Ok(value) => value,
+            Err(message) => {
+                loading.set(false);
+                if task_alive.load(Ordering::Relaxed) {
+                    error.set(Some(message));
+                }
+                return;
+            }
+        };
+
+        if !task_alive.load(Ordering::Relaxed) {
+            return;
+        }
+
+        let mut view = TerminalView {
+            id: info.id.clone(),
+            title: if info.title.is_empty() {
+                info.shell
+                    .as_ref()
+                    .map(|shell| shell.name.clone())
+                    .unwrap_or_else(|| "shell".to_string())
+            } else {
+                info.title.clone()
+            },
+            cwd: info.cwd.clone(),
+            state: info.state.clone(),
+            writable: info.is_writable(),
+            cols: info.cols,
+            rows: info.rows,
+            screen: String::new(),
+            error: info.error.clone(),
+        };
+        ui.terminal_uplink.set(Some(stream.uplink()));
+        ui.terminal_seq.set(0);
+        ui.terminal.set(Some(view.clone()));
+        loading.set(false);
+
+        // 调试钩子：连接成功后自动输入一条命令，验证 GUI 侧上行链路。
+        if let Ok(command) = std::env::var("DSH_DEBUG_TERMINAL_CMD") {
+            let sequence = 1;
+            ui.terminal_seq.set(sequence);
+            if let Ok(value) =
+                serde_json::to_value(TerminalInput::write(sequence, format!("{command}\n")))
+            {
+                stream.uplink().send_item(value);
+                tracing::info!(%command, "终端调试命令已发送");
+            }
+        }
+
+        let mut raw = String::new();
+        let mut last_flush = Instant::now() - Duration::from_millis(100);
+        while let Some(event) = stream.next().await {
+            if !task_alive.load(Ordering::Relaxed) {
+                break;
+            }
+            match event {
+                StreamEvent::Frame(value) => {
+                    let Ok(frame) = serde_json::from_value::<TerminalFrame>(value) else {
+                        continue;
+                    };
+                    match frame {
+                        TerminalFrame::Snapshot {
+                            screen,
+                            info,
+                            writable,
+                            ..
+                        } => {
+                            raw = screen;
+                            apply_terminal_info(&mut view, &info, writable);
+                        }
+                        TerminalFrame::Output { data, .. } => {
+                            raw.push_str(&data);
+                            trim_screen(&mut raw);
+                        }
+                        TerminalFrame::State { info, writable } => {
+                            apply_terminal_info(&mut view, &info, writable);
+                        }
+                        TerminalFrame::Ack {
+                            refusal: Some(reason),
+                            ..
+                        } => {
+                            view.writable = false;
+                            view.error = Some(format!("输入被拒绝: {reason}"));
+                        }
+                        TerminalFrame::Ack { .. } => {}
+                    }
+                }
+                StreamEvent::Error(err) => {
+                    view.error = Some(format!("终端流错误: {}", err.message));
+                    break;
+                }
+                StreamEvent::End => break,
+            }
+
+            if last_flush.elapsed() >= Duration::from_millis(80) {
+                view.screen = raw.clone();
+                ui.terminal.set(Some(view.clone()));
+                last_flush = Instant::now();
+            }
+        }
+
+        view.screen = raw;
+        if view.state == "running" {
+            view.state = "exited".to_string();
+            view.writable = false;
+        }
+        if task_alive.load(Ordering::Relaxed) {
+            ui.terminal.set(Some(view));
+        }
+        let still_current = (ui.terminal_alive)()
+            .as_ref()
+            .is_some_and(|slot| Arc::ptr_eq(slot, &task_alive));
+        if still_current {
+            ui.terminal_uplink.set(None);
+        }
+    });
+}
+
+fn apply_terminal_info(view: &mut TerminalView, info: &WebTerminalInfo, writable: bool) {
+    if !info.title.is_empty() {
+        view.title = info.title.clone();
+    }
+    view.cwd = info.cwd.clone();
+    view.state = info.state.clone();
+    view.writable = writable && info.is_running();
+    view.cols = info.cols;
+    view.rows = info.rows;
+    if let Some(error) = &info.error {
+        view.error = Some(error.clone());
+    }
+}
+
+/// 超出上限时从最旧的一整行开始丢弃；偏移必须落在字符边界上。
+fn trim_screen(raw: &mut String) {
+    if raw.len() <= MAX_SCREEN_BYTES {
+        return;
+    }
+    let mut cut = raw.len() - MAX_SCREEN_BYTES;
+    while cut < raw.len() && !raw.is_char_boundary(cut) {
+        cut += 1;
+    }
+    if let Some(position) = raw[cut..].find('\n') {
+        cut += position + 1;
+    }
+    raw.drain(..cut);
+}
+
+/// 客户端 mint 的终端 id（`^[\w-]{1,128}$`）。
+fn next_terminal_id() -> String {
+    use std::sync::atomic::AtomicU64;
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    format!("ui-{millis:x}-{}", COUNTER.fetch_add(1, Ordering::Relaxed))
+}
+
 fn spawn_follow(handle: Arc<DshClient>, address: SessionAddress, ui: Ui) {
     let session_id = address.session_id().as_str().to_string();
     let is_subagent = address.is_subagent();
@@ -1945,7 +2469,11 @@ fn spawn_follow(handle: Arc<DshClient>, address: SessionAddress, ui: Ui) {
         };
         let mut view = SessionView::new();
         let mut announced = false;
-        let mut last_flush = Instant::now();
+        // 首帧（快照）必须立刻上屏：节流窗口从"已经过去 100ms"起算，
+        // 否则空闲会话只来一帧快照时，UI 会一直是空的。
+        let mut last_flush = Instant::now() - Duration::from_millis(100);
+        // 首次刷新强制贴底；之后只在用户已接近底部时跟随，避免打断向上翻阅
+        let mut first_flush = true;
 
         while let Some(event) = stream.next().await {
             match event {
@@ -2041,6 +2569,8 @@ fn spawn_follow(handle: Arc<DshClient>, address: SessionAddress, ui: Ui) {
                         if is_active {
                             running.set(view.live.is_some());
                             messages.set(map::rows(&view));
+                            scroll_conversation(first_flush);
+                            first_flush = false;
                             trajectory.set(map::trajectory(&view));
                             queue.set(map::queue_items(&view));
                             context_usage.set(map::context_usage(&view));
@@ -2061,6 +2591,7 @@ fn spawn_follow(handle: Arc<DshClient>, address: SessionAddress, ui: Ui) {
         if active.read().as_deref() == Some(session_id.as_str()) {
             running.set(false);
             messages.set(map::rows(&view));
+            scroll_conversation(false);
             trajectory.set(map::trajectory(&view));
         }
     });
@@ -2095,6 +2626,80 @@ fn refresh_catalog(handle: Arc<DshClient>, parent_id: String, ui: Ui) {
     });
 }
 
+/// 一条 provider 的凭据引用：官方实现看命名空间里的 `apiKeyEnv`，
+/// pi-ai route 看 `nativeAuth.env[0]`；需要 OAuth 登录的返回 `None`。
+fn provider_key_ref(
+    item: &LlmConfigurableProvider,
+    settings: &SettingsDescribeValue,
+) -> Option<String> {
+    if item.settings_path.is_empty() {
+        settings
+            .namespace(&item.settings_ns)
+            .and_then(|ns| ns.str_field("apiKeyEnv"))
+            .map(str::to_string)
+    } else {
+        item.native_auth
+            .as_ref()
+            .filter(|auth| !auth.oauth)
+            .and_then(|auth| auth.env.first().cloned())
+    }
+}
+
+/// 拼接设置页的 provider 行（目录 + 已注册路由 + 凭据状态）。
+fn provider_rows(
+    configurable: &[LlmConfigurableProvider],
+    registered: &[LlmProviderInfo],
+    settings: &SettingsDescribeValue,
+    credentials: &HashMap<String, CredentialInfo>,
+) -> Vec<ProviderRow> {
+    let active: std::collections::HashSet<&str> = registered
+        .iter()
+        .map(|item| item.id.as_str())
+        .collect();
+    configurable
+        .iter()
+        .map(|item| {
+            let key_ref = provider_key_ref(item, settings);
+            let credential = key_ref
+                .as_ref()
+                .and_then(|reference| credentials.get(reference));
+            ProviderRow {
+                id: item.provider.clone(),
+                name: if item.display_name.is_empty() {
+                    item.provider.clone()
+                } else {
+                    item.display_name.clone()
+                },
+                key_ref,
+                configured: credential.is_some_and(|info| info.configured),
+                writable: credential.is_none_or(|info| info.writable),
+                active: active.contains(item.provider.as_str()),
+                settings_ns: item.settings_ns.clone(),
+                settings_path: item.settings_path.clone(),
+            }
+        })
+        .collect()
+}
+
+/// 读取一次 provider 目录与凭据状态。
+async fn load_providers(
+    handle: &DshClient,
+    settings: &SettingsDescribeValue,
+) -> Vec<ProviderRow> {
+    let Ok(configurable) = handle.list_configurable_providers().await else {
+        return Vec::new();
+    };
+    let registered = handle.list_providers().await.unwrap_or_default();
+    let mut refs: Vec<String> = configurable
+        .iter()
+        .filter_map(|item| provider_key_ref(item, settings))
+        .collect();
+    refs.sort();
+    refs.dedup();
+    let credentials = handle.credentials_describe(refs).await.unwrap_or_default();
+    provider_rows(&configurable, &registered, settings, &credentials)
+}
+
 /// 在右栏侧开一个子会话（只读副本，续聊仍在主面板）。
 fn spawn_aside_follow(handle: Arc<DshClient>, address: SessionAddress, ui: Ui) {
     let mut aside = ui.aside;
@@ -2105,7 +2710,9 @@ fn spawn_aside_follow(handle: Arc<DshClient>, address: SessionAddress, ui: Ui) {
             return;
         };
         let mut view = SessionView::new();
-        let mut last_flush = Instant::now();
+        // 首帧（快照）必须立刻上屏：节流窗口从"已经过去 100ms"起算，
+        // 否则空闲会话只来一帧快照时，UI 会一直是空的。
+        let mut last_flush = Instant::now() - Duration::from_millis(100);
 
         while let Some(event) = stream.next().await {
             match event {
